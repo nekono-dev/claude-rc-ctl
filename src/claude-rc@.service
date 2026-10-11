@@ -1,0 +1,17 @@
+# claude remote-control 常駐用テンプレートユニット
+# インスタンス名 %i に対応するディレクトリは ~/.config/claude-rc/%i.env の CLAUDE_RC_DIR で指定する
+# 管理は claude-rc-ctl を使う
+[Unit]
+Description=Claude Remote Control (%i)
+ConditionPathExists=%h/.config/claude-rc/%i.env
+
+[Service]
+Type=forking
+# TTY を確保するため tmux 内で起動する（インスタンスごとに専用ソケット）
+ExecStart=/usr/bin/tmux -L claude-rc-%i new-session -d -s %i %h/.local/bin/claude-rc-run %i
+ExecStop=/usr/bin/tmux -L claude-rc-%i kill-server
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

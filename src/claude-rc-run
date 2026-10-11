@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# claude-rc@.service から tmux 内で呼ばれる起動ラッパー
+# 使い方: claude-rc-run <name>
+set -u
+name="$1"
+conf="$HOME/.config/claude-rc/$name.env"
+# shellcheck source=/dev/null
+. "$conf"
+
+# nvm を読み込んで claude を PATH に通す（Node のバージョン変更に追従させるため）
+export NVM_DIR="$HOME/.nvm"
+# shellcheck source=/dev/null
+. "$NVM_DIR/nvm.sh" >/dev/null 2>&1
+
+cd "$CLAUDE_RC_DIR" || { echo "ディレクトリがありません: $CLAUDE_RC_DIR" >&2; sleep 30; exit 1; }
+
+args=(remote-control
+  --spawn "${CLAUDE_RC_SPAWN:-same-dir}"
+  --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}"
+  --remote-control-session-name-prefix "$(hostname)-$name")
+
+# --continue は --spawn と併用できないため、再起動時は常に新規に立ち上げる
+exec claude "${args[@]}"

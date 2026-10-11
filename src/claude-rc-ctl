@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# claude remote-control 常駐サービスの管理コマンド
+set -euo pipefail
+
+CONF_DIR="$HOME/.config/claude-rc"
+unit() { echo "claude-rc@$1.service"; }
+
+usage() {
+  cat <<USAGE
+使い方: claude-rc-ctl <コマンド> [引数]
+
+  add [--spawn <same-dir|worktree>] <dir> [name]
+                     ディレクトリを登録して起動（name 省略時はディレクトリ名、
+                     --spawn 省略時は same-dir）
+  remove <name>      停止して登録解除
+  list               登録済みの一覧と状態
+  start|stop|restart|status <name>
+  attach <name>      tmux 画面に接続（抜けるときは Ctrl-b d）
+  logs <name>        画面の直近出力とジャーナルを表示
+  self update [--set KEY=VALUE ...]   導入時の取得元の最新へ更新
+  self uninstall [--purge]            本体を削除（--purge で登録・設定も削除）
+  self status                         導入情報を表示
+
+設定ファイル: $CONF_DIR/<name>.env
+  CLAUDE_RC_DIR              対象ディレクトリ（必須）
+  CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
+  CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
+USAGE
+}
+
+need_name() { [ $# -ge 1 ] || { usage; exit 1; }; [ -f "$CONF_DIR/$1.env" ] || { echo "未登録です: $1" >&2; exit 1; }; }
+
+is_trusted() {
+  python3 - "$1" <<'PY'
+import json, os, sys
+try:
+    d = json.load(open(os.path.expanduser("~/.claude.json")))
+    sys.exit(0 if d.get("projects", {}).get(sys.argv[1], {}).get("hasTrustDialogAccepted") else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  add)
+    spawn=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --spawn) [ $# -ge 2 ] || { usage; exit 1; }; spawn="$2"; shift 2 ;;
+        --spawn=*) spawn="${1#--spawn=}"; shift ;;
+        *) break ;;
+      esac
+    done
+    [ $# -ge 1 ] || { usage; exit 1; }
+    [ -z "$spawn" ] || [[ "$spawn" =~ ^(same-dir|worktree)$ ]] || { echo "--spawn は same-dir か worktree を指定してください: $spawn" >&2; exit 1; }
+    dir="$(realpath "$1")"
+    [ -d "$dir" ] || { echo "ディレクトリがありません: $dir" >&2; exit 1; }
+    name="${2:-$(basename "$dir")}"
+    [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "name は英数字と _ . - のみ使えます: $name" >&2; exit 1; }
+    [ -f "$CONF_DIR/$name.env" ] && { echo "既に登録済みです: $name" >&2; exit 1; }
+    if [ "$spawn" = worktree ]; then
+      git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || echo "警告: git リポジトリではないため worktree モードは使えません（--spawn same-dir を指定してください）" >&2
+    fi
+    mkdir -p "$CONF_DIR"
+    printf 'CLAUDE_RC_DIR=%q\n' "$dir" > "$CONF_DIR/$name.env"
+    [ -z "$spawn" ] || printf 'CLAUDE_RC_SPAWN=%q\n' "$spawn" >> "$CONF_DIR/$name.env"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$(unit "$name")"
+    echo "登録しました: $name -> $dir"
+    is_trusted "$dir" || echo "注意: このディレクトリは未信頼です。'claude-rc-ctl attach $name' で信頼確認に応答してください" >&2
+    ;;
+  remove)
+    need_name "$@"
+    systemctl --user disable --now "$(unit "$1")" || true
+    rm -f "$CONF_DIR/$1.env"
+    echo "登録解除しました: $1"
+    ;;
+  list)
+    shopt -s nullglob
+    printf '%-20s %-10s %s\n' NAME STATE DIR
+    for f in "$CONF_DIR"/*.env; do
+      n="$(basename "$f" .env)"
+      # shellcheck source=/dev/null
+      d="$(. "$f"; echo "$CLAUDE_RC_DIR")"
+      printf '%-20s %-10s %s\n' "$n" "$(systemctl --user is-active "$(unit "$n")" || true)" "$d"
+    done
+    ;;
+  start|stop|restart|status)
+    need_name "$@"
+    systemctl --user "$cmd" "$(unit "$1")"
+    ;;
+  attach)
+    need_name "$@"
+    exec tmux -L "claude-rc-$1" attach -t "$1"
+    ;;
+  logs)
+    need_name "$@"
+    echo "=== 画面出力 ==="
+    tmux -L "claude-rc-$1" capture-pane -p -t "$1" 2>/dev/null || echo "(起動していません)"
+    echo "=== journal ==="
+    journalctl --user -u "$(unit "$1")" -n 30 --no-pager
+    ;;
+  self)
+    case "${1:-}" in
+      update|uninstall|status) ;;
+      *) usage; exit 1 ;;
+    esac
+    installer="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../installer/main.sh"
+    [ -f "$installer" ] || { echo "インストーラがありません（install.sh 経由で導入してください）: $installer" >&2; exit 1; }
+    exec sh "$installer" "$@"
+    ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "不明なコマンド: $cmd" >&2; usage; exit 1 ;;
+esac
