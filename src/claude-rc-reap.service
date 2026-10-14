@@ -1,0 +1,7 @@
+# アイドルのセッションを一括で回収する（claude-rc-reap.timer から起動される）
+[Unit]
+Description=Claude Remote Control idle session reaper
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-rc-ctl reap --all

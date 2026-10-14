@@ -24,15 +24,16 @@
 
 すべての導入物をユーザーのホーム配下に置き、管理者権限を使わない。コマンドとラッパーは取得先のファイルへのシンボリックリンクとし、更新は取得先の入れ替えだけで反映する。サービス定義だけはコピーして配置する。
 
-| 種別                 | パス                                                      | 削除時の扱い                |
-| -------------------- | --------------------------------------------------------- | --------------------------- |
-| 取得先（git）        | `$CLAUDE_RC_CTL_DIR`、既定 `~/.local/share/claude-rc-ctl` | 削除                        |
-| コマンド             | `~/.local/bin/claude-rc-ctl`（取得先へのリンク）          | 削除                        |
-| 起動ラッパー         | `~/.local/bin/claude-rc-run`（取得先へのリンク）          | 削除                        |
-| サービス定義         | `~/.config/systemd/user/claude-rc@.service`               | 削除                        |
-| インスタンス登録情報 | `~/.config/claude-rc/<名前>.env`                          | パージ時だけ削除            |
-| インストーラ設定     | `~/.config/claude-rc-ctl/claude-rc-ctl.env`               | パージ時だけ削除（権限600） |
-| 導入メタ情報         | `~/.local/state/claude-rc-ctl-installer/state`            | パージ時だけ削除            |
+| 種別                   | パス                                                      | 削除時の扱い                |
+| ---------------------- | --------------------------------------------------------- | --------------------------- |
+| 取得先（git）          | `$CLAUDE_RC_CTL_DIR`、既定 `~/.local/share/claude-rc-ctl` | 削除                        |
+| コマンド               | `~/.local/bin/claude-rc-ctl`（取得先へのリンク）          | 削除                        |
+| 起動ラッパー           | `~/.local/bin/claude-rc-run`（取得先へのリンク）          | 削除                        |
+| サービス定義           | `~/.config/systemd/user/claude-rc@.service`               | 削除                        |
+| 回収サービス・タイマー | `~/.config/systemd/user/claude-rc-reap.{service,timer}`   | 削除                        |
+| インスタンス登録情報   | `~/.config/claude-rc/<名前>.env`                          | パージ時だけ削除            |
+| インストーラ設定       | `~/.config/claude-rc-ctl/claude-rc-ctl.env`               | パージ時だけ削除（権限600） |
+| 導入メタ情報           | `~/.local/state/claude-rc-ctl-installer/state`            | パージ時だけ削除            |
 
 ### D-2: 登録と解除 (FR-1, FR-2, FR-7, FR-8)
 

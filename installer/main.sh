@@ -34,8 +34,9 @@ app_install() {
   chmod 755 "$DIR/src/claude-rc-ctl" "$DIR/src/claude-rc-run"
   ln -sf "$DIR/src/claude-rc-ctl" "$BIN_DIR/claude-rc-ctl"
   ln -sf "$DIR/src/claude-rc-run" "$BIN_DIR/claude-rc-run"
-  cp "$DIR/src/claude-rc@.service" "$UNIT_DIR/claude-rc@.service"
+  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-reap.service" "$DIR/src/claude-rc-reap.timer" "$UNIT_DIR/"
   systemctl --user daemon-reload
+  systemctl --user enable --now claude-rc-reap.timer
   [ -s "$HOME/.nvm/nvm.sh" ] || log "警告: $HOME/.nvm/nvm.sh がありません。claude-rc-run は nvm 経由で claude を起動します"
   [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = "yes" ] || log "警告: linger が無効です。ログアウトやOS再起動後も常駐させるには loginctl enable-linger $(id -un) を実行してください"
   case ":$PATH:" in
@@ -49,12 +50,13 @@ app_uninstall() {
     [ -f "$_f" ] || continue
     systemctl --user stop "claude-rc@$(basename "$_f" .env).service" 2>/dev/null || true
   done
-  rm -f "$UNIT_DIR/claude-rc@.service" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
+  systemctl --user disable --now claude-rc-reap.timer 2>/dev/null || true
+  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-reap.service" "$UNIT_DIR/claude-rc-reap.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
   systemctl --user daemon-reload 2>/dev/null || true
 }
 
 app_purge() {
-  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service
+  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-reap.timer"
   systemctl --user daemon-reload 2>/dev/null || true
 }
 

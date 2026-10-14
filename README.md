@@ -31,6 +31,7 @@ claude-rc-ctl add --spawn worktree ~/work/myproj   # worktree モードで登録
 claude-rc-ctl list                       # 一覧と状態
 claude-rc-ctl attach myproj              # tmux に接続（抜けるときは Ctrl-b d）
 claude-rc-ctl logs myproj                # 直近の画面出力とジャーナル
+claude-rc-ctl reap myproj                # アイドルのセッションを終了（--dry-run は対象の表示のみ、--all は全件）
 claude-rc-ctl start|stop|restart|status myproj
 claude-rc-ctl remove myproj              # 停止して登録解除
 ```
@@ -46,8 +47,18 @@ claude-rc-ctl remove myproj              # 停止して登録解除
 | `CLAUDE_RC_DIR`             | （必須）   | 作業ディレクトリ                                                               |
 | `CLAUDE_RC_SPAWN`           | `same-dir` | spawn モード（`same-dir` または `worktree`。`worktree` は git リポジトリのみ） |
 | `CLAUDE_RC_PERMISSION_MODE` | `auto`     | 権限モード                                                                     |
+| `CLAUDE_RC_IDLE_MINUTES`    | `60`       | アイドル回収の閾値（分）。`0` で回収しない                                     |
 
 変更後は `claude-rc-ctl restart <名前>` で反映する。
+
+## アイドルセッションの回収
+
+remote-control サーバーの配下で放置されたセッションは、そのままだと増え続ける。`claude-rc-reap.timer`（インストーラが有効化する）が10分ごとに `claude-rc-ctl reap --all` を実行し、アイドルのセッションを終了してアプリ上でオフラインにする。サーバーは止めないので、アプリからメッセージを送ると、サーバーがそのセッションを再び起動する。
+
+- アイドルの判定は、セッションの transcript（`~/.claude/projects/`）の最終更新が `CLAUDE_RC_IDLE_MINUTES` 分以上前であることによる。
+- 配下で実行中のプロセスがあるセッションと、サーバー本体は終了しない。
+- 回収対象は `claude-rc-ctl reap --dry-run --all` で事前に確認できる。
+- 自動実行の状態は `systemctl --user list-timers claude-rc-reap.timer` で確認する。
 
 ## 更新と削除
 
@@ -60,6 +71,7 @@ claude-rc-ctl self uninstall --purge    # 登録情報と設定も削除
 
 ## 注意事項
 
+- アイドル回収の「メッセージで再度オンラインになる」動作は、Claude Code の仕様（サーバー配下のセッションが終了していても、メッセージ送信で再起動される）に依存する。実機で確認してから運用すること。
 - 更新でサービス定義が変わった場合、稼働中のインスタンスは自動では再起動されない。`restart` で反映する。
 - `self uninstall` はインスタンスを停止する。再導入後は `start` で再開する。
 - 取得先に未コミットの変更があると、更新と再導入は中止される。
