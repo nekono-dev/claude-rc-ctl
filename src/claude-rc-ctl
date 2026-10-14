@@ -27,7 +27,7 @@ usage() {
   CLAUDE_RC_DIR              対象ディレクトリ（必須）
   CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
-  CLAUDE_RC_IDLE_MINUTES     アイドル回収の閾値・分（既定: 60、0 で回収しない）
+  CLAUDE_RC_IDLE_MINUTES     アイドル回収の閾値・分（既定: 240、0 で回収しない）
 USAGE
 }
 
@@ -47,7 +47,8 @@ PY
 # reap_one <name> <dry(0|1)>: サーバー配下のアイドルセッションを終了する
 reap_one() {
   local n="$1" dry="$2" idle pid
-  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_IDLE_MINUTES:-60}")"
+  # shellcheck source=/dev/null
+  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_IDLE_MINUTES:-240}")"
   [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_IDLE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
   [ "$idle" -gt 0 ] || return 0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0

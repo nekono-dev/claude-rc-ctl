@@ -47,7 +47,7 @@ claude-rc-ctl remove myproj              # 停止して登録解除
 | `CLAUDE_RC_DIR`             | （必須）   | 作業ディレクトリ                                                               |
 | `CLAUDE_RC_SPAWN`           | `same-dir` | spawn モード（`same-dir` または `worktree`。`worktree` は git リポジトリのみ） |
 | `CLAUDE_RC_PERMISSION_MODE` | `auto`     | 権限モード                                                                     |
-| `CLAUDE_RC_IDLE_MINUTES`    | `60`       | アイドル回収の閾値（分）。`0` で回収しない                                     |
+| `CLAUDE_RC_IDLE_MINUTES`    | `240`      | アイドル回収の閾値（分）。`0` で回収しない                                     |
 
 変更後は `claude-rc-ctl restart <名前>` で反映する。
 

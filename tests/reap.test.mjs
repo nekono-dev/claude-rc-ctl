@@ -97,7 +97,7 @@ async function scenario(sessions, { idle, args = ["reap", "inst"] } = {}) {
 test("claude-rc-reap/AC-1: 閾値を超えて更新のないセッションが終了し、サーバー本体は終了せずに残る", async () => {
   const e = makeEnv()
   e.register("inst", "/x")
-  const srv = await makeServer(e, [{ dir: makeProject(e, "a", 120) }])
+  const srv = await makeServer(e, [{ dir: makeProject(e, "a", 300) }])
   try {
     const r = e.run(CTL, ["reap", "inst"], {
       STUB_PANE_PID_inst: String(srv.pid),
@@ -108,7 +108,7 @@ test("claude-rc-reap/AC-1: 閾値を超えて更新のないセッションが�
     assert.ok(alive(srv.pid), "サーバーが終了した")
     assert.match(
       r.out,
-      /\[inst\] 回収: pid=\d+ セッション=- アイドル=1[0-9][0-9]分/,
+      /\[inst\] 回収: pid=\d+ セッション=- アイドル=3[0-9][0-9]分/,
     )
   } finally {
     srv.stop()
@@ -135,8 +135,8 @@ test("claude-rc-reap/AC-4: 更新が古くても、実行中の子プロセス�
   assert.deepEqual(killed, [false, true])
 })
 
-test("claude-rc-reap/AC-5: 閾値が未指定のとき、59分前の更新は残り、61分前の更新は終了する", async () => {
-  const { killed } = await scenario([{ minutes: 59 }, { minutes: 61 }])
+test("claude-rc-reap/AC-5: 閾値が未指定のとき、239分前の更新は残り、241分前の更新は終了する", async () => {
+  const { killed } = await scenario([{ minutes: 239 }, { minutes: 241 }])
   assert.deepEqual(killed, [false, true])
 })
 
