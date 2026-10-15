@@ -35,7 +35,10 @@ echo JOURNAL_OUTPUT`,
   // 昇格コマンドは失敗させ、呼ばれたことを記録する
   sudo: `echo "sudo $*" >> "$HOME/calls.log"
 exit 99`,
-  claude: `{ pwd; for a in "$@"; do echo "$a"; done; } > "$HOME/claude.args"`,
+  claude: `{ pwd; for a in "$@"; do echo "$a"; done; } > "$HOME/claude.args"
+echo "$CLAUDE_CODE_EFFORT_LEVEL" > "$HOME/claude.effort"`,
+  // 待ち時間を省き、呼び出しだけを記録する
+  sleep: `echo "sleep $*" >> "$HOME/calls.log"`,
   // STUB_UID が設定されていれば id -u の結果を差し替える
   id: `if [ "\${1:-}" = "-u" ] && [ -n "\${STUB_UID:-}" ]; then echo "$STUB_UID"; exit 0; fi
 exec /usr/bin/id "$@"`,

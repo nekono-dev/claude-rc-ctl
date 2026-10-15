@@ -84,14 +84,19 @@ RestartSec=10
 
 ```bash
 # claude-rc-run <name>
-. ~/.config/claude-rc/<name>.env                # CLAUDE_RC_DIR / CLAUDE_RC_SPAWN / CLAUDE_RC_PERMISSION_MODE
+. ~/.config/claude-rc/<name>.env                # CLAUDE_RC_DIR / CLAUDE_RC_SPAWN / CLAUDE_RC_PERMISSION_MODE / CLAUDE_RC_EFFORT
 . "$NVM_DIR/nvm.sh"                             # claude を PATH に通す
 cd "$CLAUDE_RC_DIR"
+effort="${CLAUDE_RC_EFFORT:-medium}"
+case "$effort" in low|medium|high|xhigh|max) ;; *) echo "不正な effort: $effort" >&2; sleep 30; exit 1 ;; esac
+export CLAUDE_CODE_EFFORT_LEVEL="$effort"       # remote-control が起こす各セッションへ継承される
 exec claude remote-control \
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}" \
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}" \
   --remote-control-session-name-prefix "$(hostname)-<name>"
 ```
+
+effort は claude の環境変数で渡す。remote-control には effort を指定するオプションがないためである。不正な値は画面にメッセージを残して30秒待ち、claude を起動せず終了コード1で終える。
 
 tmux は pty を提供するために使う。ユニットの更新は daemon-reload 後の次回起動から反映し、稼働中のサービスは自動では再起動しない。
 
@@ -155,6 +160,7 @@ main.sh uninstall [--purge]
 | 登録検証の失敗（名前・場所・重複・起動方式） | 理由を標準エラーへ出し、登録情報を作らず終了コード1   |
 | 管理者での導入                               | 「一般ユーザーで実行してください」を出して終了コード1 |
 | tmux・python3・systemctl・git の欠落         | 不足コマンド名を出して終了コード1                     |
+| 起動時の effort が許可値以外                 | 理由を標準エラーへ出して30秒待ち、終了コード1         |
 | 取得したコミットが埋め込み値と不一致         | エラー終了し、導入物を配置しない                      |
 | 取得先に未コミットの変更がある               | 更新を中止して終了コード1                             |
 | 取得先が危険なパスまたは git 管理外          | 削除を中止して終了コード1                             |

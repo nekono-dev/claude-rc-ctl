@@ -14,6 +14,14 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$CLAUDE_RC_DIR" || { echo "ディレクトリがありません: $CLAUDE_RC_DIR" >&2; sleep 30; exit 1; }
 
+# effort は remote-control のオプションにないため、環境変数で各セッションへ継承させる
+effort="${CLAUDE_RC_EFFORT:-medium}"
+case "$effort" in
+  low|medium|high|xhigh|max) ;;
+  *) echo "CLAUDE_RC_EFFORT は low|medium|high|xhigh|max で指定してください: $effort" >&2; sleep 30; exit 1 ;;
+esac
+export CLAUDE_CODE_EFFORT_LEVEL="$effort"
+
 args=(remote-control
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}"
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}"

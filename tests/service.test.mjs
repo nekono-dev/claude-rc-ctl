@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { hostname } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -7,7 +7,7 @@ import { ROOT, RUN, makeEnv } from "./helpers.mjs"
 
 const unit = readFileSync(join(ROOT, "src", "claude-rc@.service"), "utf8")
 
-const runWith = (extraEnvLines) => {
+const setup = (extraEnvLines) => {
   const e = makeEnv()
   const dir = join(e.home, "work")
   mkdirSync(dir)
@@ -16,9 +16,14 @@ const runWith = (extraEnvLines) => {
     join(e.confDir, "w.env"),
     `CLAUDE_RC_DIR=${dir}\n${extraEnvLines}`,
   )
-  const r = e.run(RUN, ["w"])
+  return { e, dir, r: e.run(RUN, ["w"]) }
+}
+
+const runWith = (extraEnvLines) => {
+  const { e, dir, r } = setup(extraEnvLines)
   assert.equal(r.status, 0, r.err)
   return {
+    effort: readFileSync(join(e.home, "claude.effort"), "utf8").trim(),
     args: readFileSync(join(e.home, "claude.args"), "utf8").trim().split("\n"),
     dir,
   }
@@ -48,6 +53,24 @@ test("claude-rc-ctl/AC-9: 登録情報の起動方式と権限モードで remot
     "--permission-mode",
     "plan",
   ])
+})
+
+test("claude-rc-ctl/AC-24: 登録情報に effort がないとき medium で claude が起動される", () => {
+  assert.equal(runWith("").effort, "medium")
+})
+
+test("claude-rc-ctl/AC-25: 登録情報の effort で claude が起動される", () => {
+  for (const v of ["low", "medium", "high", "xhigh", "max"])
+    assert.equal(runWith(`CLAUDE_RC_EFFORT=${v}\n`).effort, v)
+})
+
+test("claude-rc-ctl/AC-26: 許可値以外の effort では claude を起動せずに失敗する", () => {
+  for (const v of ["middle", "HIGH", "0"]) {
+    const { e, r } = setup(`CLAUDE_RC_EFFORT=${v}\n`)
+    assert.equal(r.status, 1)
+    assert.match(r.err, /CLAUDE_RC_EFFORT/)
+    assert.equal(existsSync(join(e.home, "claude.args")), false)
+  }
 })
 
 test("claude-rc-ctl/AC-10: サービス定義は tmux の専用ソケット内でセッションを作成して起動する", () => {

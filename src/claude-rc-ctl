@@ -27,6 +27,7 @@ usage() {
   CLAUDE_RC_DIR              対象ディレクトリ（必須）
   CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
+  CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
   CLAUDE_RC_IDLE_MINUTES     アイドル回収の閾値・分（既定: 240、0 で回収しない）
 USAGE
 }
