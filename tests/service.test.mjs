@@ -34,6 +34,7 @@ test("claude-rc-ctl/AC-8: 登録情報に値がないとき same-dir と auto �
   assert.equal(args[0], dir)
   assert.deepEqual(args.slice(1), [
     "remote-control",
+    "--no-create-session-in-dir",
     "--spawn",
     "same-dir",
     "--permission-mode",
@@ -47,7 +48,7 @@ test("claude-rc-ctl/AC-9: 登録情報の起動方式と権限モードで remot
   const { args } = runWith(
     "CLAUDE_RC_SPAWN=same-dir\nCLAUDE_RC_PERMISSION_MODE=plan\n",
   )
-  assert.deepEqual(args.slice(2, 6), [
+  assert.deepEqual(args.slice(3, 7), [
     "--spawn",
     "same-dir",
     "--permission-mode",
@@ -84,4 +85,10 @@ test("claude-rc-ctl/AC-10: サービス定義は tmux の専用ソケット内�
 test("claude-rc-ctl/AC-19: サービス定義は常に再起動し、待ち時間が10秒である", () => {
   assert.match(unit, /^Restart=always$/m)
   assert.match(unit, /^RestartSec=10$/m)
+})
+
+test("claude-rc-archive/AC-14: 起動ラッパーはセッションを事前に作らない指定を付けて remote-control を起動する", () => {
+  const { args } = runWith("")
+  assert.equal(args[1], "remote-control")
+  assert.ok(args.includes("--no-create-session-in-dir"))
 })

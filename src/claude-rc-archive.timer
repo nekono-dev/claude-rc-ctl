@@ -1,0 +1,10 @@
+# アーカイブの判定を10分ごとに実行する
+[Unit]
+Description=Claude Remote Control idle archiver timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

@@ -19,9 +19,10 @@ die() { printf 'エラー: %s\n' "$*" 1>&2; exit 1; }
 usage() {
   cat <<EOF
 使い方: $APP self <update|uninstall|status> [オプション]
-  update    [--set KEY=VALUE ...]   導入時のREFの最新へ追従して再適用する
-  uninstall [--purge]               アプリ本体を削除する。--purge で設定・データ・導入メタ情報も削除する
-  status                            導入情報を表示する
+  update    [--ref NAME] [--set KEY=VALUE ...]   導入中のブランチ・タグの最新へ更新する。--ref で別のブランチ・タグへ切り替える
+  uninstall [--purge]                            アプリ本体を削除する。--purge で設定・データ・導入メタ情報も削除する
+  status                                         導入情報を表示する
+  refs                                           切り替えられるブランチとタグを表示する
 EOF
 }
 
@@ -34,9 +35,13 @@ app_install() {
   chmod 755 "$DIR/src/claude-rc-ctl" "$DIR/src/claude-rc-run"
   ln -sf "$DIR/src/claude-rc-ctl" "$BIN_DIR/claude-rc-ctl"
   ln -sf "$DIR/src/claude-rc-run" "$BIN_DIR/claude-rc-run"
-  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-reap.service" "$DIR/src/claude-rc-reap.timer" "$UNIT_DIR/"
+  if [ -f "$UNIT_DIR/claude-rc-reap.timer" ]; then
+    systemctl --user disable --now claude-rc-reap.timer 2>/dev/null || true
+  fi
+  rm -f "$UNIT_DIR/claude-rc-reap.service" "$UNIT_DIR/claude-rc-reap.timer" "$UNIT_DIR/timers.target.wants/claude-rc-reap.timer"
+  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-archive.service" "$DIR/src/claude-rc-archive.timer" "$UNIT_DIR/"
   systemctl --user daemon-reload
-  systemctl --user enable --now claude-rc-reap.timer
+  systemctl --user enable --now claude-rc-archive.timer
   [ -s "$HOME/.nvm/nvm.sh" ] || log "警告: $HOME/.nvm/nvm.sh がありません。claude-rc-run は nvm 経由で claude を起動します"
   [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = "yes" ] || log "警告: linger が無効です。ログアウトやOS再起動後も常駐させるには loginctl enable-linger $(id -un) を実行してください"
   case ":$PATH:" in
@@ -50,13 +55,13 @@ app_uninstall() {
     [ -f "$_f" ] || continue
     systemctl --user stop "claude-rc@$(basename "$_f" .env).service" 2>/dev/null || true
   done
-  systemctl --user disable --now claude-rc-reap.timer 2>/dev/null || true
-  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-reap.service" "$UNIT_DIR/claude-rc-reap.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
+  systemctl --user disable --now claude-rc-archive.timer 2>/dev/null || true
+  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-archive.service" "$UNIT_DIR/claude-rc-archive.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
   systemctl --user daemon-reload 2>/dev/null || true
 }
 
 app_purge() {
-  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-reap.timer"
+  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-archive.timer"
   systemctl --user daemon-reload 2>/dev/null || true
 }
 
@@ -146,20 +151,78 @@ write_state() {
   (umask 022; printf "REF='%s'\nCOMMIT='%s'\nREPO_URL='%s'\nUPDATED_AT='%s'\n" "$REF" "$COMMIT" "$REPO_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE")
 }
 
-fetch_latest_and_reexec() {
-  [ -f "$STATE_FILE" ] || die "導入されていません（$STATE_FILE がありません）。先に install.sh install を実行してください"
-  _ref=$(kv_get "$STATE_FILE" REF) || die "導入メタ情報にREFがありません"
-  _url=$(kv_get "$STATE_FILE" REPO_URL) || die "導入メタ情報にREPO_URLがありません"
+ref_short() {
+  case "$1" in
+    refs/heads/*) printf '%s' "${1#refs/heads/}" ;;
+    refs/tags/*) printf '%s' "${1#refs/tags/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+ref_kind() {
+  case "$1" in
+    refs/heads/*) printf 'branch' ;;
+    refs/tags/*) printf 'tag' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+remote_has() {
+  printf '%s\n' "$1" | awk -F'\t' -v r="$2" '$2 == r { f = 1 } END { exit !f }'
+}
+
+resolve_ref() {
+  _name=$1; _url=$2
+  case "$_name" in
+    ""|*[!A-Za-z0-9._/-]*) die "ブランチ・タグ名に使えない文字が含まれます: $_name" ;;
+  esac
+  _out=$(git ls-remote "$_url" "refs/heads/*" "refs/tags/*") || die "取得元に接続できません: $_url"
+  case "$_name" in
+    refs/heads/?*|refs/tags/?*)
+      remote_has "$_out" "$_name" || die "取得元に存在しません: $_name"
+      RESOLVED=$_name
+      return 0 ;;
+  esac
+  _b=''; _t=''
+  if remote_has "$_out" "refs/heads/$_name"; then _b=1; fi
+  if remote_has "$_out" "refs/tags/$_name"; then _t=1; fi
+  if [ -n "$_b" ] && [ -n "$_t" ]; then
+    die "ブランチとタグの両方に $_name があります。refs/heads/$_name か refs/tags/$_name で指定してください"
+  elif [ -n "$_b" ]; then RESOLVED="refs/heads/$_name"
+  elif [ -n "$_t" ]; then RESOLVED="refs/tags/$_name"
+  else die "取得元にブランチもタグも存在しません: $_name（'$APP self refs' で一覧を表示できます）"
+  fi
+}
+
+switch_and_reexec() {
+  _url=$REPO_URL
+  if [ "$SUB" = "update" ]; then
+    [ -f "$STATE_FILE" ] || die "導入されていません（$STATE_FILE がありません）。先に install.sh install を実行してください"
+    [ -n "$_url" ] || _url=$(kv_get "$STATE_FILE" REPO_URL) || die "導入メタ情報にREPO_URLがありません"
+    [ -n "$REF" ] || REF=$(kv_get "$STATE_FILE" REF) || die "導入メタ情報にREFがありません"
+  fi
   [ -d "$DIR/.git" ] || die "$DIR はgitリポジトリではありません"
+  resolve_ref "$REF" "$_url"
   if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
     die "$DIR に未コミットの変更があります。退避してから再実行してください"
   fi
-  log "最新を取得: $_ref"
+  log "取得: $(ref_short "$RESOLVED")（$(ref_kind "$RESOLVED")）"
   git -C "$DIR" remote set-url origin "$_url"
-  git -C "$DIR" fetch -q --depth 1 origin "$_ref"
+  git -C "$DIR" fetch -q --depth 1 origin "$RESOLVED"
   _commit=$(git -C "$DIR" rev-parse 'FETCH_HEAD^{commit}')
   git -C "$DIR" checkout -q --detach FETCH_HEAD
-  exec sh "$SCRIPT_DIR/main.sh" update --ref "$_ref" --commit "$_commit" --repo-url "$_url" "$@"
+  set --
+  _oldifs=$IFS
+  IFS='
+'
+  set -f
+  for _l in $SETS; do
+    [ -n "$_l" ] || continue
+    set -- "$@" --set "$_l"
+  done
+  set +f
+  IFS=$_oldifs
+  exec sh "$SCRIPT_DIR/main.sh" "$SUB" --ref "$RESOLVED" --commit "$_commit" --repo-url "$_url" "$@"
 }
 
 cmd_apply() {
@@ -194,12 +257,23 @@ cmd_uninstall() {
 
 cmd_status() {
   [ -f "$STATE_FILE" ] || { echo "未導入"; return 0; }
+  _ref=$(kv_get "$STATE_FILE" REF)
   echo "導入先:     $DIR"
-  echo "REF:        $(kv_get "$STATE_FILE" REF)"
+  echo "参照:       $(ref_short "$_ref")（$(ref_kind "$_ref")）"
   echo "コミット:   $(kv_get "$STATE_FILE" COMMIT)"
   echo "取得元:     $(kv_get "$STATE_FILE" REPO_URL)"
   echo "更新日時:   $(kv_get "$STATE_FILE" UPDATED_AT)"
   echo "設定:       $CONF_FILE"
+}
+
+cmd_refs() {
+  [ -f "$STATE_FILE" ] || die "導入されていません（$STATE_FILE がありません）"
+  _url=$(kv_get "$STATE_FILE" REPO_URL) || die "導入メタ情報にREPO_URLがありません"
+  git ls-remote "$_url" "refs/heads/*" "refs/tags/*" | awk -F'\t' '
+    $2 ~ /\^\{\}$/ { next }
+    $2 ~ /^refs\/heads\// { sub(/^refs\/heads\//, "", $2); print "branch\t" $2 }
+    $2 ~ /^refs\/tags\// { sub(/^refs\/tags\//, "", $2); print "tag\t" $2 }
+  ' || die "取得元に接続できません: $_url"
 }
 
 main() {
@@ -207,20 +281,15 @@ main() {
   SUB=$1; shift
   REF=''; COMMIT=''; REPO_URL=''; PURGE=''
   case "$SUB" in
-    install|update|uninstall|status) ;;
+    install|update|uninstall|status|refs) ;;
     -h|--help|help) usage; exit 0 ;;
     *) usage 1>&2; exit 1 ;;
   esac
 
-  if [ "$SUB" = "update" ]; then
-    _has_commit=''
-    for _a in "$@"; do [ "$_a" = "--commit" ] && _has_commit=1; done
-    if [ -z "$_has_commit" ]; then fetch_latest_and_reexec "$@"; fi
-  fi
-
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --ref) [ "$#" -ge 2 ] || die "--ref に値がありません"; REF=$2; shift 2 ;;
+      --ref=*) REF=${1#--ref=}; shift ;;
       --commit) [ "$#" -ge 2 ] || die "--commit に値がありません"; COMMIT=$2; shift 2 ;;
       --repo-url) [ "$#" -ge 2 ] || die "--repo-url に値がありません"; REPO_URL=$2; shift 2 ;;
       --set)
@@ -237,6 +306,13 @@ $2"
   done
   [ -z "$PURGE" ] || [ "$SUB" = "uninstall" ] || die "--purge は uninstall のオプションです"
   [ -z "$SETS" ] || [ "$SUB" = "install" ] || [ "$SUB" = "update" ] || die "--set は install・update のオプションです"
+  [ -z "$REF" ] || [ "$SUB" = "install" ] || [ "$SUB" = "update" ] || die "--ref は install・update のオプションです"
+
+  if [ -z "$COMMIT" ]; then
+    if [ "$SUB" = "update" ] || { [ "$SUB" = "install" ] && [ -n "$REF" ]; }; then
+      switch_and_reexec
+    fi
+  fi
 
   TMP_SCHEMA=$(mktemp); TMP_CONF=$(mktemp)
   trap 'rm -f "$TMP_SCHEMA" "$TMP_CONF"' EXIT
@@ -245,6 +321,7 @@ $2"
     install|update) cmd_apply ;;
     uninstall) cmd_uninstall ;;
     status) cmd_status ;;
+    refs) cmd_refs ;;
   esac
 }
 

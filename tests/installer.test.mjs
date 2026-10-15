@@ -77,3 +77,26 @@ test("claude-rc-ctl/AC-14: 管理者として実行すると何も変更せず�
   assert.ok(!existsSync(join(e.home, ".local")))
   assert.ok(!existsSync(join(e.home, ".config")))
 })
+
+test("claude-rc-ctl/AC-30: ブランチ名を指定して導入すると導入先がそのブランチの先頭になる", () => {
+  const e = makeEnv()
+  const repo = makeRepo(e)
+  const onFeat = repo.branch("feat/x")
+  const script = buildInstaller(e, repo)
+  const r = e.run("sh", [script, "install", "--ref", "feat/x"])
+  assert.equal(r.status, 0, r.err)
+  const dir = join(e.home, ".local", "share", "claude-rc-ctl")
+  assert.equal(
+    e.run("git", ["-C", dir, "rev-parse", "HEAD"]).out.trim(),
+    onFeat,
+  )
+  const ctl = join(e.home, ".local", "bin", "claude-rc-ctl")
+  assert.match(e.run(ctl, ["self", "status"]).out, /参照:\s+feat\/x（branch）/)
+  // install.sh の update は埋め込みコミットへ戻さず、導入中のブランチに追従する
+  repo.git("checkout", "-q", "feat/x")
+  const next = repo.commit()
+  repo.git("checkout", "-q", "main")
+  const up = e.run("sh", [script, "update"])
+  assert.equal(up.status, 0, up.err)
+  assert.equal(e.run("git", ["-C", dir, "rev-parse", "HEAD"]).out.trim(), next)
+})

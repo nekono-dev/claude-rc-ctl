@@ -8,14 +8,15 @@
 
 # 構成
 
-| パス                   | 内容                                                                    |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `src/`                 | 配布物（コマンド・起動ラッパー・systemd テンプレートユニット）          |
-| `installer/`           | 頒布用インストーラ（`main.sh` の `app_*` フックが固有処理）             |
-| `.github/workflows/`   | CI（ブランチ push で Pre-release、`v*` タグで Release に `install.sh`） |
-| `specs/claude-rc-ctl/` | 要件・設計・タスク                                                      |
+| パス                   | 内容                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `src/`                 | 配布物（コマンド・起動ラッパー・systemd テンプレートユニット）               |
+| `installer/`           | 頒布用インストーラ（`main.sh` の `app_*` フックが固有処理）                  |
+| `.github/workflows/`   | CI（ブランチ push でアーティファクト、`v*` タグで Release に `install.sh`）  |
+| `.claude/skills/`      | 開発用 skill（仕様駆動開発、インストーラ・CI の整備 `bootstrap-ci-builder`） |
+| `specs/claude-rc-ctl/` | 要件・設計・タスク                                                           |
 
 # 実機検証
 
-- 実 systemd での確認は検証サーバへ資材を scp して行う。インストーラは `sh installer/build-bootstrap.sh main <コミット> file://<リポジトリ>` で生成し、`sh install.sh install` で導入する。
+- 実 systemd での確認は検証サーバへ資材を scp して行う。インストーラは `sh installer/build-bootstrap.sh refs/heads/main <コミット> file://<リポジトリ>` で生成し、`sh install.sh install` で導入する。
 - `claude` の代わりに、引数を表示して `sleep` する擬似コマンドを `PATH` 上に置けば、`claude` 本体なしで常駐の動作を確認できる。

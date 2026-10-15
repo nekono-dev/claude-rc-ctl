@@ -15,11 +15,14 @@ usage() {
   remove <name>      停止して登録解除
   list               登録済みの一覧と状態
   start|stop|restart|status <name>
-  reap [--dry-run] <name|--all>
-                     アイドルのセッションを終了（--dry-run は対象の表示のみ）
+  archive [--dry-run] <name|--all>
+                     全セッションがアイドルでリマインダーもなければ、サーバーを再起動して
+                     セッションをアーカイブ（--dry-run は判定の表示のみ）
   attach <name>      tmux 画面に接続（抜けるときは Ctrl-b d）
   logs <name>        画面の直近出力とジャーナルを表示
-  self update [--set KEY=VALUE ...]   導入時の取得元の最新へ更新
+  self update [--ref NAME] [--set KEY=VALUE ...]
+                                      導入中のブランチ・タグの最新へ更新（--ref で切り替え）
+  self refs                           切り替えられるブランチとタグを表示
   self uninstall [--purge]            本体を削除（--purge で登録・設定も削除）
   self status                         導入情報を表示
 
@@ -28,7 +31,7 @@ usage() {
   CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
   CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
-  CLAUDE_RC_IDLE_MINUTES     アイドル回収の閾値・分（既定: 240、0 で回収しない）
+  CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 1440、0 でアーカイブしない）
 USAGE
 }
 
@@ -45,20 +48,21 @@ except Exception:
 PY
 }
 
-# reap_one <name> <dry(0|1)>: サーバー配下のアイドルセッションを終了する
-reap_one() {
-  local n="$1" dry="$2" idle pid
+# archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
+# 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
+archive_one() {
+  local n="$1" dry="$2" idle pid rc=0
   # shellcheck source=/dev/null
-  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_IDLE_MINUTES:-240}")"
-  [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_IDLE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
+  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_ARCHIVE_MINUTES:-1440}")"
+  [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_ARCHIVE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
   [ "$idle" -gt 0 ] || return 0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0
   pid="$(tmux -L "claude-rc-$n" display-message -p -t "$n" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
-  python3 - "$n" "$pid" "$idle" "$dry" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" <<'PY'
-import os, re, signal, sys, time
+  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" <<'PY' || rc=$?
+import json, os, re, sys, time
 
-name, server, idle_min, dry, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == "1", sys.argv[5]
+name, server, idle_min, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 now = time.time()
 clk = os.sysconf("SC_CLK_TCK")
 btime = next(int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime"))
@@ -89,6 +93,13 @@ def tree(p):
     return out
 
 
+def cwd_of(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
 def last_active(pid):
     last, sid = procs[pid][2], "-"
     try:
@@ -96,7 +107,7 @@ def last_active(pid):
         for a, b in zip(argv, argv[1:]):
             if a in ("--session-id", "--resume") and UUID.fullmatch(b):
                 sid = b
-        proj = os.path.join(cdir, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.readlink(f"/proc/{pid}/cwd")))
+        proj = os.path.join(cdir, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd_of(pid) or ""))
         own = os.path.join(proj, sid + ".jsonl")
         files = [own] if os.path.isfile(own) else [os.path.join(proj, x) for x in os.listdir(proj) if x.endswith(".jsonl")]
         last = max([os.path.getmtime(x) for x in files], default=last)
@@ -105,18 +116,49 @@ def last_active(pid):
     return last, sid
 
 
-for pid in sorted(kids.get(server, [])):
+def has_reminder(cwd):
+    # 読めない・壊れた定義は保持側（リマインダーあり）に倒す
+    if not cwd:
+        return False
+    f = os.path.join(cwd, ".claude", "scheduled_tasks.json")
+    if not os.path.exists(f):
+        return False
+    try:
+        return len(json.load(open(f)).get("tasks", [])) > 0
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
+sessions = sorted(kids.get(server, []))
+if not sessions:
+    sys.exit(0)
+server_cwd = cwd_of(server)
+all_idle = True
+for pid in sessions:
     last, sid = last_active(pid)
     idle = int((now - last) // 60)
-    if idle < idle_min or any(procs[q][0] == "R" for q in tree(pid)):
-        continue
-    print(f"[{name}] {'回収対象' if dry else '回収'}: pid={pid} セッション={sid} アイドル={idle}分")
-    if not dry:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    if any(procs[q][0] == "R" for q in tree(pid)):
+        verdict = "保持(実行中)"
+    elif has_reminder(cwd_of(pid)) or has_reminder(server_cwd):
+        verdict = "保持(リマインダー)"
+    elif idle < idle_min:
+        verdict = "保持(アイドル不足)"
+    else:
+        verdict = "アーカイブ"
+    all_idle &= verdict == "アーカイブ"
+    print(f"[{name}] セッション={sid} アイドル={idle}分 判定={verdict}")
+sys.exit(10 if all_idle else 0)
 PY
+  if [ "$rc" -eq 10 ]; then
+    if [ "$dry" = 1 ]; then
+      echo "[$n] 対象: サーバーを再起動してセッションをアーカイブする"
+    else
+      echo "[$n] アーカイブ: サーバーを再起動する"
+      systemctl --user restart "$(unit "$n")"
+    fi
+    return 0
+  fi
+  return "$rc"
 }
 
 cmd="${1:-}"; shift || true
@@ -168,7 +210,7 @@ case "$cmd" in
     need_name "$@"
     systemctl --user "$cmd" "$(unit "$1")"
     ;;
-  reap)
+  archive)
     dry=0
     if [ "${1:-}" = "--dry-run" ]; then dry=1; shift; fi
     [ $# -eq 1 ] || { usage; exit 1; }
@@ -176,12 +218,12 @@ case "$cmd" in
       shopt -s nullglob
       rc=0
       for f in "$CONF_DIR"/*.env; do
-        reap_one "$(basename "$f" .env)" "$dry" || rc=1
+        archive_one "$(basename "$f" .env)" "$dry" || rc=1
       done
       exit "$rc"
     fi
     need_name "$@"
-    reap_one "$1" "$dry"
+    archive_one "$1" "$dry"
     ;;
   attach)
     need_name "$@"
@@ -196,7 +238,7 @@ case "$cmd" in
     ;;
   self)
     case "${1:-}" in
-      update|uninstall|status) ;;
+      update|uninstall|status|refs) ;;
       *) usage; exit 1 ;;
     esac
     installer="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../installer/main.sh"

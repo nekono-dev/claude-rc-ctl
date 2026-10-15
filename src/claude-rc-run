@@ -22,7 +22,9 @@ case "$effort" in
 esac
 export CLAUDE_CODE_EFFORT_LEVEL="$effort"
 
+# セッションを事前に作らない（作ると再開用の記録が残り、停止してもアーカイブされない）
 args=(remote-control
+  --no-create-session-in-dir
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}"
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}"
   --remote-control-session-name-prefix "$(hostname)-$name")

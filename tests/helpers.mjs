@@ -108,14 +108,22 @@ export function makeRepo(e) {
     git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "next")
     return head()
   }
-  return { dir, head, commit, url: `file://${dir}` }
+  /** 現在のコミットからブランチを作る（作成後は main に戻る）。新しいコミットを積んで返す */
+  const branch = (name) => {
+    git("checkout", "-q", "-b", name)
+    const c = commit()
+    git("checkout", "-q", "main")
+    return c
+  }
+  const tag = (name) => git("tag", name)
+  return { dir, git, head, commit, branch, tag, url: `file://${dir}` }
 }
 
-/** 取得元の現在のコミットに固定した install.sh を生成して返す */
-export function buildInstaller(e, repo) {
+/** 取得元の現在のコミットに固定した install.sh を生成して返す（ref は参照の完全名） */
+export function buildInstaller(e, repo, ref = "refs/heads/main") {
   const r = e.run("sh", [
     join(ROOT, "installer", "build-bootstrap.sh"),
-    "main",
+    ref,
     repo.head(),
     repo.url,
   ])
@@ -126,10 +134,10 @@ export function buildInstaller(e, repo) {
 }
 
 /** 取得元・install.sh を用意して install を実行する */
-export function installFixture(e, extra = {}) {
+export function installFixture(e, extra = {}, installArgs = []) {
   const repo = makeRepo(e)
   const script = buildInstaller(e, repo)
-  const res = e.run("sh", [script, "install"], extra)
+  const res = e.run("sh", [script, "install", ...installArgs], extra)
   return {
     repo,
     script,

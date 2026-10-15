@@ -1,0 +1,7 @@
+# 放置されたサーバーを一括で判定し、アーカイブする（claude-rc-archive.timer から起動される）
+[Unit]
+Description=Claude Remote Control idle archiver
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-rc-ctl archive --all

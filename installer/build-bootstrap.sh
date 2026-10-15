@@ -1,9 +1,9 @@
 #!/bin/sh
-# 責務: 頒布するインストーラ（`install.sh`）を、ひな形（installer/bootstrap.sh.tmpl）へ REF・COMMIT・REPO_URL を埋め込んで標準出力へ出す。
+# 責務: 頒布するインストーラ（`install.sh`）を、ひな形（installer/bootstrap.sh.tmpl）へ REF（参照の完全名）・COMMIT・REPO_URL を埋め込んで標準出力へ出す。
 # CI（.github/workflows/release-installer.yml）が、ブランチ・タグごとに実行する。手元でも同じ手順で試せる。
-# 使い方: sh installer/build-bootstrap.sh <REF> <COMMIT（40桁の16進）> <REPO_URL（https://・file://）> > install.sh
+# 使い方: sh installer/build-bootstrap.sh <REF（refs/heads/<名前> か refs/tags/<名前>）> <COMMIT（40桁の16進）> <REPO_URL（https://・file://）> > install.sh
 # 失敗時: 引数の形式が不正（置換に使えない文字・桁数違い）、または置換漏れがあれば、何も出力せず終了コード1。
-# 例: sh installer/build-bootstrap.sh v1.0.0 0123456789abcdef0123456789abcdef01234567 https://example.test/repo.git > install.sh
+# 例: sh installer/build-bootstrap.sh refs/tags/v1.0.0 0123456789abcdef0123456789abcdef01234567 https://example.test/repo.git > install.sh
 
 set -eu
 
@@ -14,7 +14,11 @@ REPO_URL=$3
 
 # シェルの単一引用符と、sedの置換に安全に埋め込める文字だけを許す。
 case "$REF" in
-  ""|*[!A-Za-z0-9._/-]*) echo "不正なREFです: $REF" 1>&2; exit 1 ;;
+  refs/heads/?*|refs/tags/?*) ;;
+  *) echo "REFは refs/heads/<名前> か refs/tags/<名前> の形にしてください: $REF" 1>&2; exit 1 ;;
+esac
+case "$REF" in
+  *[!A-Za-z0-9._/-]*) echo "不正なREFです: $REF" 1>&2; exit 1 ;;
 esac
 case "$COMMIT" in
   *[!0-9a-f]*) echo "COMMITは40桁の16進数（小文字）にしてください: $COMMIT" 1>&2; exit 1 ;;
