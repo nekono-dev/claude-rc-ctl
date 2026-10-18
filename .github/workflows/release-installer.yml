@@ -38,6 +38,7 @@ jobs:
       - name: テストと仕様書の検査
         run: |
           npm ci
+          npm ci --ignore-scripts --prefix .claude/skills/spec-driven-development/scripts
           npm test
           npm run lint:spec
 

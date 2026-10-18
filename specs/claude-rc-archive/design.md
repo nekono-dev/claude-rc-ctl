@@ -12,7 +12,42 @@
 | `tests/helpers.mjs`             | tmux の display-message と systemctl の停止状態を返す擬似コマンド |
 | `tests/archive.test.mjs`        | archive と定期実行ユニット、起動指定のテスト                      |
 
-## 2. 設計項目
+## 2. 関係図・ワークフロー
+
+呼び出しと配置の依存方向を示す（テストを含む）。
+
+```mermaid
+flowchart LR
+  unit["src/claude-rc-archive"] --> ctl["claude-rc-ctl"]
+  ctl --> run["claude-rc-run"]
+  ctl --> ext_systemctl["systemctl"]
+  ctl --> ext_tmux["tmux"]
+  main["main"] --> unit
+  t_archive["archive.test"] --> ctl
+  t_archive --> run
+  t_archive --> main
+  t_archive --> helpers["helpers"]
+```
+
+一括判定の流れと、保持か再起動かの分岐を示す。
+
+```mermaid
+sequenceDiagram
+  participant unit as src/claude-rc-archive
+  participant ctl as claude-rc-ctl
+  participant ext_tmux as tmux
+  participant ext_systemctl as systemctl
+  unit->>ctl: archive --all
+  ctl->>ext_tmux: display-message
+  alt 全セッションを保持
+    ctl-->>unit: 何もせず成功
+  else 保持するセッションなし
+    ctl->>ext_systemctl: restart
+    ctl-->>unit: 再起動して成功
+  end
+```
+
+## 3. 設計項目
 
 ### D-1: アーカイブの仕組み (FR-1, FR-8)
 
@@ -86,7 +121,7 @@ WantedBy=timers.target
 | 削除       | `systemctl --user disable --now claude-rc-archive.timer` の後に2つのユニットを削除する            |
 | パージ     | timers.target.wants 内のタイマーのリンクを削除する                                                |
 
-## 3. エラー処理
+## 4. エラー処理
 
 | 事象                             | 処理                                                          |
 | -------------------------------- | ------------------------------------------------------------- |

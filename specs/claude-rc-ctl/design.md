@@ -18,7 +18,79 @@
 | `tests/installer.test.mjs`                | インストーラのテスト                                                                |
 | `tests/self.test.mjs`                     | self サブコマンドのテスト                                                           |
 
-## 2. 設計項目
+## 2. 関係図・ワークフロー
+
+呼び出しと生成の依存方向を示す（テストと CI を含む）。
+
+```mermaid
+flowchart LR
+  ctl["claude-rc-ctl"] --> main["main"]
+  ctl --> ext_systemctl["systemctl"]
+  unit["claude-rc@"] --> run["claude-rc-run"]
+  unit --> ext_tmux["tmux"]
+  run --> ext_claude["claude"]
+  main --> unit
+  main --> run
+  main --> config["config"]
+  boot["bootstrap.sh"] --> main
+  build["build-bootstrap"] --> boot
+  ci["release-installer"] --> build
+  ci --> t_installer["installer.test"]
+  t_instance["instance.test"] --> ctl
+  t_instance --> helpers["helpers"]
+  t_service["service.test"] --> run
+  t_service --> unit
+  t_service --> helpers
+  t_installer --> main
+  t_installer --> build
+  t_installer --> helpers
+  t_self["self.test"] --> ctl
+  t_self --> helpers
+```
+
+インスタンスの登録から常駐の開始まで、検証に失敗した場合の分岐を示す。
+
+```mermaid
+sequenceDiagram
+  participant ext_user as 利用者
+  participant ctl as claude-rc-ctl
+  participant ext_systemctl as systemctl
+  participant unit as claude-rc@
+  participant ext_tmux as tmux
+  participant run as claude-rc-run
+  participant ext_claude as claude
+  ext_user->>ctl: add
+  alt 検証に失敗
+    ctl-->>ext_user: 終了コード1
+  else 検証に成功
+    ctl->>ext_systemctl: enable --now
+    ext_systemctl->>unit: 起動
+    unit->>ext_tmux: new-session
+    ext_tmux->>run: 実行
+    run->>ext_claude: remote-control
+  end
+```
+
+self 更新の流れと、取得先に未コミットの変更がある場合の分岐を示す。
+
+```mermaid
+sequenceDiagram
+  participant ext_user as 利用者
+  participant ctl as claude-rc-ctl
+  participant main as main
+  participant ext_git as git
+  participant ext_systemctl as systemctl
+  ext_user->>ctl: self update
+  ctl->>main: update
+  alt 未コミットの変更あり
+    main-->>ctl: エラー終了
+  else 変更なし
+    main->>ext_git: fetch --depth 1
+    main->>ext_systemctl: daemon-reload
+  end
+```
+
+## 3. 設計項目
 
 ### D-1: 配置先 (FR-9, NFR-3)
 
@@ -167,7 +239,7 @@ main.sh uninstall [--purge]
 
 パージなしの削除では、登録情報を残すので、再導入後に各インスタンスを `start` で再開できる。
 
-## 3. エラー処理
+## 4. エラー処理
 
 | 事象                                         | 処理                                                  |
 | -------------------------------------------- | ----------------------------------------------------- |
