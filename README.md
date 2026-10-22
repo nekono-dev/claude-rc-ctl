@@ -48,7 +48,7 @@ claude-rc-ctl remove myproj              # 停止して登録解除
 | `CLAUDE_RC_DIR`             | （必須）   | 作業ディレクトリ                                                               |
 | `CLAUDE_RC_SPAWN`           | `same-dir` | spawn モード（`same-dir` または `worktree`。`worktree` は git リポジトリのみ） |
 | `CLAUDE_RC_PERMISSION_MODE` | `auto`     | 権限モード                                                                     |
-| `CLAUDE_RC_ARCHIVE_MINUTES` | `1440`     | アーカイブまでのアイドル時間（分）。`0` でアーカイブしない                     |
+| `CLAUDE_RC_ARCHIVE_MINUTES` | `10080`    | アーカイブまでのアイドル時間（分）。`0` でアーカイブしない                     |
 | `CLAUDE_RC_EFFORT`          | `medium`   | effort（`low`・`medium`・`high`・`xhigh`・`max`）                              |
 
 変更後は `claude-rc-ctl restart <名前>` で反映する。
@@ -59,7 +59,7 @@ remote-control サーバーの配下で放置されたセッションは、ア�
 
 `claude-rc-archive.timer`（インストーラが有効化する）が10分ごとに `claude-rc-ctl archive --all` を実行し、次の条件をすべて満たすインスタンスだけを再起動する。
 
-- 配下のすべてのセッションの transcript（`~/.claude/projects/`）の最終更新が、`CLAUDE_RC_ARCHIVE_MINUTES` 分（既定1440分）以上前である。
+- 配下のすべてのセッションの transcript（`~/.claude/projects/`）の最終更新が、`CLAUDE_RC_ARCHIVE_MINUTES` 分（既定10080分＝1週間）以上前である。
 - 配下に、実行中のプロセスを持つセッションがない。
 - セッションの作業ディレクトリの `.claude/scheduled_tasks.json` に、リマインダーが1件もない。
 

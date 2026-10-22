@@ -68,7 +68,7 @@ exec claude remote-control \
 ```
 claude-rc-ctl archive [--dry-run] <name>
   need_name <name>                              # 未登録は「未登録です」で終了コード1
-  idle = ${CLAUDE_RC_ARCHIVE_MINUTES:-1440}      # 整数以外はエラー、0 なら何もせず成功
+  idle = ${CLAUDE_RC_ARCHIVE_MINUTES:-10080}      # 整数以外はエラー、0 なら何もせず成功
   systemctl --user is-active が active でない → 何もせず成功
   server = tmux -L claude-rc-<name> display-message -p -t <name> '#{pane_pid}'
   python3 で次を判定する

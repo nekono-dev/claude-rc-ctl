@@ -31,7 +31,7 @@ usage() {
   CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
   CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
-  CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 1440、0 でアーカイブしない）
+  CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 10080、0 でアーカイブしない）
 USAGE
 }
 
@@ -53,7 +53,7 @@ PY
 archive_one() {
   local n="$1" dry="$2" idle pid rc=0
   # shellcheck source=/dev/null
-  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_ARCHIVE_MINUTES:-1440}")"
+  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_ARCHIVE_MINUTES:-10080}")"
   [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_ARCHIVE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
   [ "$idle" -gt 0 ] || return 0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0

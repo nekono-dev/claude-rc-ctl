@@ -104,12 +104,12 @@ async function scenario(sessions, { idle, args = ["archive", "inst"] } = {}) {
 
 test("claude-rc-archive/AC-1: 全セッションが閾値を超えて更新されていないとき、サーバーが再起動される", async () => {
   const { r, restarted } = await scenario([
-    { minutes: 2000 },
-    { minutes: 1500 },
+    { minutes: 20000 },
+    { minutes: 15000 },
   ])
   assert.equal(r.status, 0, r.err)
   assert.ok(restarted)
-  assert.match(r.out, /\[inst\] セッション=- アイドル=2000分 判定=アーカイブ/)
+  assert.match(r.out, /\[inst\] セッション=- アイドル=20000分 判定=アーカイブ/)
   assert.match(r.out, /\[inst\] アーカイブ: サーバーを再起動する/)
 })
 
@@ -122,7 +122,7 @@ test("claude-rc-archive/AC-2: 未登録の名前を指定すると、何も再�
 })
 
 test("claude-rc-archive/AC-3: 閾値内に更新のあるセッションが1つでもあれば、サーバーは再起動されない", async () => {
-  const { r, restarted } = await scenario([{ minutes: 5 }, { minutes: 3000 }])
+  const { r, restarted } = await scenario([{ minutes: 5 }, { minutes: 20000 }])
   assert.equal(r.status, 0, r.err)
   assert.ok(!restarted)
   assert.match(r.out, /判定=保持\(アイドル不足\)/)
@@ -130,8 +130,8 @@ test("claude-rc-archive/AC-3: 閾値内に更新のあるセッションが1つ�
 
 test("claude-rc-archive/AC-4: 更新が古くても、実行中の子プロセスを持つセッションがあれば、サーバーは再起動されない", async () => {
   const { r, restarted } = await scenario([
-    { minutes: 3000, busy: true },
-    { minutes: 3000 },
+    { minutes: 20000, busy: true },
+    { minutes: 20000 },
   ])
   assert.ok(!restarted)
   assert.match(r.out, /判定=保持\(実行中\)/)
@@ -141,20 +141,20 @@ test("claude-rc-archive/AC-5: 更新が古くても、作業ディレクトリ�
   const withTask = JSON.stringify({
     tasks: [{ id: "a", cron: "0 9 * * *", prompt: "x", createdAt: 1 }],
   })
-  const kept = await scenario([{ minutes: 3000, reminder: withTask }])
+  const kept = await scenario([{ minutes: 20000, reminder: withTask }])
   assert.ok(!kept.restarted)
   assert.match(kept.r.out, /判定=保持\(リマインダー\)/)
-  const broken = await scenario([{ minutes: 3000, reminder: "{" }])
+  const broken = await scenario([{ minutes: 20000, reminder: "{" }])
   assert.ok(!broken.restarted, "壊れた定義は保持側に倒す")
   const empty = await scenario([
-    { minutes: 3000, reminder: JSON.stringify({ tasks: [] }) },
+    { minutes: 20000, reminder: JSON.stringify({ tasks: [] }) },
   ])
   assert.ok(empty.restarted, "タスクが0件なら再起動される")
 })
 
-test("claude-rc-archive/AC-6: 閾値が未指定のとき、1439分前の更新は残り、1441分前の更新は再起動される", async () => {
-  assert.ok(!(await scenario([{ minutes: 1439 }])).restarted)
-  assert.ok((await scenario([{ minutes: 1441 }])).restarted)
+test("claude-rc-archive/AC-6: 閾値が未指定のとき、10079分前の更新は残り、10081分前の更新は再起動される", async () => {
+  assert.ok(!(await scenario([{ minutes: 10079 }])).restarted)
+  assert.ok((await scenario([{ minutes: 10081 }])).restarted)
 })
 
 test("claude-rc-archive/AC-7: 閾値を指定すると、その分数で判定される", async () => {
@@ -163,7 +163,7 @@ test("claude-rc-archive/AC-7: 閾値を指定すると、その分数で判定�
 })
 
 test("claude-rc-archive/AC-8: 閾値が0のとき、古いセッションがあっても再起動されない", async () => {
-  const { r, restarted } = await scenario([{ minutes: 50000 }], { idle: 0 })
+  const { r, restarted } = await scenario([{ minutes: 90000 }], { idle: 0 })
   assert.equal(r.status, 0, r.err)
   assert.ok(!restarted)
 })
@@ -191,7 +191,7 @@ test("claude-rc-archive/AC-10: 一括判定を指示すると、条件を満た�
   const names = ["aa", "bb", "cc", "dd"]
   const srvs = []
   const extra = { STUB_INACTIVE: "cc" }
-  const minutes = { aa: 3000, bb: 3000, cc: 3000, dd: 5 }
+  const minutes = { aa: 20000, bb: 20000, cc: 20000, dd: 5 }
   try {
     for (const n of names) {
       e.register(n, "/x")
@@ -261,7 +261,7 @@ test("claude-rc-archive/AC-12: 削除を指示すると、定期実行のユニ�
 })
 
 test("claude-rc-archive/AC-13: 確認のみを指定すると、対象と理由が表示され、サーバーは再起動されない", async () => {
-  const { r, restarted } = await scenario([{ minutes: 3000 }], {
+  const { r, restarted } = await scenario([{ minutes: 20000 }], {
     args: ["archive", "--dry-run", "inst"],
   })
   assert.equal(r.status, 0, r.err)
