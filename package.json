@@ -4,8 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
-    "lint:spec": "prettier --check specs && node .claude/skills/spec-driven-development/scripts/check-all.mjs",
-    "test:spec": "node .claude/skills/spec-driven-development/scripts/selftest.mjs"
+    "lint:spec": "spec-lint"
   },
   "devDependencies": {
     "prettier": "3.3.3"
