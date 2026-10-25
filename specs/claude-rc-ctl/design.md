@@ -2,21 +2,23 @@
 
 ## 1. 構成
 
-| パス                                      | 責務                                                                                |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- |
-| `src/claude-rc-ctl`                       | インスタンス管理コマンド。self サブコマンドで installer/main.sh に委譲              |
-| `src/claude-rc-run`                       | tmux 内で remote-control を起動する起動ラッパー                                     |
-| `src/claude-rc@.service`                  | インスタンスごとに展開されるユーザー単位の systemd テンプレートユニット             |
-| `installer/bootstrap.sh.tmpl`             | 頒布するインストーラのひな形。ソース取得と本体への委譲だけを行う                    |
-| `installer/build-bootstrap.sh`            | ひな形へ参照（完全名）・COMMIT・REPO_URL を埋め込んでインストーラを生成する         |
-| `installer/main.sh`                       | 導入・更新・削除・状態表示の本体。導入物の配置と撤去を担う                          |
-| `installer/config.schema`                 | インストーラの設定キー宣言（宣言は0件）                                             |
-| `.github/workflows/release-installer.yml` | 検査とインストーラの生成・頒布を行う CI。ブランチはアーティファクト、タグは Release |
-| `tests/helpers.mjs`                       | テスト用の擬似コマンド（systemctl・tmux・journalctl・claude・sudo）と実行補助       |
-| `tests/instance.test.mjs`                 | インスタンス管理コマンドのテスト                                                    |
-| `tests/service.test.mjs`                  | 起動ラッパーとユニットのテスト                                                      |
-| `tests/installer.test.mjs`                | インストーラのテスト                                                                |
-| `tests/self.test.mjs`                     | self サブコマンドのテスト                                                           |
+| パス                                      | 責務                                                                                   |
+| ----------------------------------------- | -------------------------------------------------------------------------------------- |
+| `src/claude-rc-ctl`                       | インスタンス管理コマンド。self サブコマンドで installer/main.sh に委譲                 |
+| `src/claude-rc-run`                       | tmux 内で remote-control を起動する起動ラッパー                                        |
+| `src/claude-rc@.service`                  | インスタンスごとに展開されるユーザー単位の systemd テンプレートユニット                |
+| `installer/bootstrap.sh.tmpl`             | 頒布するインストーラのひな形。ソース取得と本体への委譲だけを行う                       |
+| `installer/build-bootstrap.sh`            | ひな形へ参照（完全名）・COMMIT・REPO_URL を埋め込んでインストーラを生成する            |
+| `installer/main.sh`                       | 導入・更新・削除・状態表示の本体（共通部分。編集しない）                               |
+| `installer/app.sh`                        | 導入物の配置と撤去（app_install・app_uninstall・app_purge）。宣言は同じ場所の app.conf |
+| `installer/config.schema`                 | インストーラの設定キー宣言（宣言は0件）                                                |
+| `.github/workflows/release-installer.yml` | 検査とインストーラの生成・頒布を行う CI。ブランチはアーティファクト、タグは Release    |
+| `.github/workflows/installer-check.yml`   | 頒布の前に通す検査（シェル・テスト・spec-lint）                                        |
+| `tests/helpers.mjs`                       | テスト用の擬似コマンド（systemctl・tmux・journalctl・claude・sudo）と実行補助          |
+| `tests/instance.test.mjs`                 | インスタンス管理コマンドのテスト                                                       |
+| `tests/service.test.mjs`                  | 起動ラッパーとユニットのテスト                                                         |
+| `tests/installer.test.mjs`                | インストーラのテスト                                                                   |
+| `tests/self.test.mjs`                     | self サブコマンドのテスト                                                              |
 
 ## 2. 関係図・ワークフロー
 
@@ -29,13 +31,15 @@ flowchart LR
   unit["claude-rc@"] --> run["claude-rc-run"]
   unit --> ext_tmux["tmux"]
   run --> ext_claude["claude"]
-  main --> unit
-  main --> run
+  main --> app["app"]
   main --> config["config"]
+  app --> unit
+  app --> run
   boot["bootstrap.sh"] --> main
   build["build-bootstrap"] --> boot
   ci["release-installer"] --> build
-  ci --> t_installer["installer.test"]
+  ci --> check["installer-check"]
+  check --> t_installer["installer.test"]
   t_instance["instance.test"] --> ctl
   t_instance --> helpers["helpers"]
   t_service["service.test"] --> run
@@ -179,15 +183,18 @@ tmux は pty を提供するために使う。ユニットの更新は daemon-re
 install.sh install [--ref <名前>] [--set KEY=VALUE ...]
   id -u が 0            → エラー終了（変更なし）
   git がない            → エラー終了
+  update・uninstall     → 導入済みの claude-rc-ctl self <サブコマンド> へ委譲する
   取得先を git init/fetch --depth 1 <COMMIT> → checkout --detach → HEAD 一致を確認
   exec sh installer/main.sh install --ref <完全名> --commit C --repo-url U [...]
   --ref を指定したときは、埋め込みの参照とコミットを渡さず、本体が名前を解決して取得し直す
 
 main.sh install（冪等）
-  設定検証 → 設定ファイル生成（権限600）→ 導入メタ情報の書き込み → app_install
+  設定検証 → 設定ファイル生成（権限600）→ app_install → 導入メタ情報の書き込み → bin の claude-rc-ctl の存在確認
   app_install: tmux・python3・systemctl の存在確認と systemctl --user の疎通確認
                → bin へリンク作成（ln -sf）→ ユニットをコピー → daemon-reload
-               → nvm・linger・PATH の警告
+               → nvm・linger の警告
+  app_install が失敗したときは、導入メタ情報を書き込まない（設定ファイルは残る）
+  bin が PATH にないときは警告する
 ```
 
 インストーラの生成は `sh installer/build-bootstrap.sh <参照の完全名> <COMMIT> <REPO_URL>` とする。参照の完全名は `refs/heads/` か `refs/tags/` で始まり、残りは英数字と `._/-` のみ、COMMIT は小文字16進40桁、REPO_URL は https または file で始まる値だけを受け付ける。

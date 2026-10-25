@@ -7,15 +7,15 @@
 - 受け入れ条件 `AC-n` には、テスト名に `claude-rc-ctl/AC-n` を含むテストを `tests/*.test.mjs` に置く（lint が検査する）。
 - テストは `npm test`（`node --test`）。systemctl・tmux 等は `tests/helpers.mjs` の擬似コマンドで置き換えるため、実機の systemd は変更されない。
 - シェルは `shellcheck -S warning` を通す。
+- インストーラ（`installer/`・`release-installer.yml`）は `bootstrap-ci-builder` プラグイン（`nekono-dev` マーケットプレイス）の方式に従う。共通部分は編集せず、更新はプラグインの `scripts/sync.sh` で上書きする。固有処理は `installer/app.conf`・`installer/app.sh`、頒布前の検査は `installer-check.yml` に書く。
 
 # 構成
 
 | パス                 | 内容                                                                        |
 | -------------------- | --------------------------------------------------------------------------- |
 | `src/`               | 配布物（コマンド・起動ラッパー・systemd テンプレートユニット）              |
-| `installer/`         | 頒布用インストーラ（`main.sh` の `app_*` フックが固有処理）                 |
+| `installer/`         | 頒布用インストーラ（固有処理は `app.conf`・`app.sh`、他は共通部分）         |
 | `.github/workflows/` | CI（ブランチ push でアーティファクト、`v*` タグで Release に `install.sh`） |
-| `.claude/skills/`    | 開発用 skill（インストーラ・CI の整備 `bootstrap-ci-builder`）              |
 | `specs/`             | 要件・設計・タスク（コンポーネントごと）                                    |
 
 # 実機検証

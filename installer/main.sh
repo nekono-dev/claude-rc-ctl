@@ -2,23 +2,62 @@
 
 set -eu
 
-APP='claude-rc-ctl'
-DATA_DIR="$HOME/.config/claude-rc"
-BIN_DIR="$HOME/.local/bin"
-UNIT_DIR="$HOME/.config/systemd/user"
-CONF_DIR="$HOME/.config/$APP"
-CONF_FILE="$CONF_DIR/$APP.env"
-STATE_DIR="$HOME/.local/state/$APP-installer"
-STATE_FILE="$STATE_DIR/state"
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 DIR=$(dirname -- "$SCRIPT_DIR")
 SCHEMA="$SCRIPT_DIR/config.schema"
 
 log() { printf '==> %s\n' "$*"; }
+warn() { printf '警告: %s\n' "$*" 1>&2; }
 die() { printf 'エラー: %s\n' "$*" 1>&2; exit 1; }
+
+APP_NAME=''
+INSTALL_MODE='system'
+CTL_NAME=''
+CTL_SUBCOMMAND=''
+DATA_DIR=''
+[ -f "$SCRIPT_DIR/app.conf" ] || die "アプリ定義がありません: $SCRIPT_DIR/app.conf"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/app.conf"
+
+valid_name() {
+  case "$1" in
+    ""|[!a-z]*|*[!a-z0-9-]*) return 1 ;;
+  esac
+}
+
+valid_name "$APP_NAME" || die "app.conf の APP_NAME が不正です（英小文字・数字・-、英小文字始まり）: $APP_NAME"
+APP=$APP_NAME
+[ -n "$CTL_NAME" ] || CTL_NAME="$APP-ctl"
+valid_name "$CTL_NAME" || die "app.conf の CTL_NAME が不正です: $CTL_NAME"
+[ -z "$CTL_SUBCOMMAND" ] || valid_name "$CTL_SUBCOMMAND" || die "app.conf の CTL_SUBCOMMAND が不正です: $CTL_SUBCOMMAND"
+CTL_CMD="$CTL_NAME${CTL_SUBCOMMAND:+ $CTL_SUBCOMMAND}"
+case "$INSTALL_MODE" in
+  system)
+    CONF_DIR="/etc/$APP"
+    STATE_DIR="/var/lib/$APP-installer"
+    BIN_DIR='/usr/local/bin'
+    [ -n "$DATA_DIR" ] || DATA_DIR="/var/lib/$APP"
+    ;;
+  user)
+    [ -n "${HOME:-}" ] || die "HOME が未設定です"
+    CONF_DIR="$HOME/.config/$APP"
+    STATE_DIR="$HOME/.local/state/$APP-installer"
+    BIN_DIR="$HOME/.local/bin"
+    [ -n "$DATA_DIR" ] || DATA_DIR="$HOME/.local/state/$APP"
+    ;;
+  *) die "app.conf の INSTALL_MODE は system か user にしてください: $INSTALL_MODE" ;;
+esac
+case "$DATA_DIR" in
+  /*) ;;
+  *) die "app.conf の DATA_DIR は絶対パスにしてください: $DATA_DIR" ;;
+esac
+CONF_FILE="$CONF_DIR/$APP.env"
+STATE_FILE="$STATE_DIR/state"
+CTL="$BIN_DIR/$CTL_NAME"
+
 usage() {
   cat <<EOF
-使い方: $APP self <update|uninstall|status> [オプション]
+使い方: $CTL_CMD <update|uninstall|status|refs> [オプション]
   update    [--ref NAME] [--set KEY=VALUE ...]   導入中のブランチ・タグの最新へ更新する。--ref で別のブランチ・タグへ切り替える
   uninstall [--purge]                            アプリ本体を削除する。--purge で設定・データ・導入メタ情報も削除する
   status                                         導入情報を表示する
@@ -26,43 +65,27 @@ usage() {
 EOF
 }
 
-app_install() {
-  for _c in tmux python3 systemctl; do
-    command -v "$_c" >/dev/null 2>&1 || die "$_c が必要です。先に導入してください"
-  done
-  systemctl --user show-environment >/dev/null 2>&1 || die "systemctl --user が使えません（ユーザーのsystemdセッションがありません）"
-  mkdir -p "$BIN_DIR" "$UNIT_DIR" "$DATA_DIR"
-  chmod 755 "$DIR/src/claude-rc-ctl" "$DIR/src/claude-rc-run"
-  ln -sf "$DIR/src/claude-rc-ctl" "$BIN_DIR/claude-rc-ctl"
-  ln -sf "$DIR/src/claude-rc-run" "$BIN_DIR/claude-rc-run"
-  if [ -f "$UNIT_DIR/claude-rc-reap.timer" ]; then
-    systemctl --user disable --now claude-rc-reap.timer 2>/dev/null || true
-  fi
-  rm -f "$UNIT_DIR/claude-rc-reap.service" "$UNIT_DIR/claude-rc-reap.timer" "$UNIT_DIR/timers.target.wants/claude-rc-reap.timer"
-  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-archive.service" "$DIR/src/claude-rc-archive.timer" "$UNIT_DIR/"
-  systemctl --user daemon-reload
-  systemctl --user enable --now claude-rc-archive.timer
-  [ -s "$HOME/.nvm/nvm.sh" ] || log "警告: $HOME/.nvm/nvm.sh がありません。claude-rc-run は nvm 経由で claude を起動します"
-  [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = "yes" ] || log "警告: linger が無効です。ログアウトやOS再起動後も常駐させるには loginctl enable-linger $(id -un) を実行してください"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) log "警告: $BIN_DIR が PATH にありません" ;;
+[ -f "$SCRIPT_DIR/app.sh" ] || die "アプリの処理がありません: $SCRIPT_DIR/app.sh"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/app.sh"
+
+check_user() {
+  case "$INSTALL_MODE" in
+    system) [ "$(id -u)" -eq 0 ] || die "root権限で実行してください" ;;
+    user) [ "$(id -u)" -ne 0 ] || die "一般ユーザーで実行してください（sudo は不要です）" ;;
   esac
 }
 
-app_uninstall() {
-  for _f in "$DATA_DIR"/*.env; do
-    [ -f "$_f" ] || continue
-    systemctl --user stop "claude-rc@$(basename "$_f" .env).service" 2>/dev/null || true
-  done
-  systemctl --user disable --now claude-rc-archive.timer 2>/dev/null || true
-  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-archive.service" "$UNIT_DIR/claude-rc-archive.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
-  systemctl --user daemon-reload 2>/dev/null || true
-}
-
-app_purge() {
-  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-archive.timer"
-  systemctl --user daemon-reload 2>/dev/null || true
+safe_to_remove() {
+  case "$1" in
+    ""|/|/usr|/usr/local|/usr/local/bin|/etc|/var|/var/lib|/opt|/home|/root|/tmp) return 1 ;;
+  esac
+  if [ -n "${HOME:-}" ]; then
+    case "$1" in
+      "$HOME"|"$HOME/.config"|"$HOME/.local"|"$HOME/.local/share"|"$HOME/.local/state"|"$HOME/.local/bin") return 1 ;;
+    esac
+  fi
+  return 0
 }
 
 kv_get() {
@@ -151,6 +174,20 @@ write_state() {
   (umask 022; printf "REF='%s'\nCOMMIT='%s'\nREPO_URL='%s'\nUPDATED_AT='%s'\n" "$REF" "$COMMIT" "$REPO_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE")
 }
 
+install_ctl() {
+  if [ -n "$CTL_SUBCOMMAND" ]; then
+    [ -x "$CTL" ] || die "app_install が $CTL を置いていません（CTL_SUBCOMMAND を指定したときは、アプリが '$CTL_CMD' を提供します）"
+  else
+    mkdir -p "$BIN_DIR"
+    (umask 022; printf '#!/bin/sh\nexec sh '"'"'%s'"'"' "$@"\n' "$SCRIPT_DIR/main.sh" > "$CTL")
+    chmod 755 "$CTL"
+  fi
+  case ":${PATH:-}:" in
+    *":$BIN_DIR:"*) ;;
+    *) warn "$BIN_DIR が PATH にありません（$CTL をフルパスで実行してください）" ;;
+  esac
+}
+
 ref_short() {
   case "$1" in
     refs/heads/*) printf '%s' "${1#refs/heads/}" ;;
@@ -190,7 +227,7 @@ resolve_ref() {
     die "ブランチとタグの両方に $_name があります。refs/heads/$_name か refs/tags/$_name で指定してください"
   elif [ -n "$_b" ]; then RESOLVED="refs/heads/$_name"
   elif [ -n "$_t" ]; then RESOLVED="refs/tags/$_name"
-  else die "取得元にブランチもタグも存在しません: $_name（'$APP self refs' で一覧を表示できます）"
+  else die "取得元にブランチもタグも存在しません: $_name（'$CTL_CMD refs' で一覧を表示できます）"
   fi
 }
 
@@ -226,25 +263,31 @@ switch_and_reexec() {
 }
 
 cmd_apply() {
+  check_user
   [ -n "$REF" ] && [ -n "$COMMIT" ] && [ -n "$REPO_URL" ] || die "$SUB は install.sh 経由で実行してください（--ref・--commit・--repo-url が必要です）"
   [ "$SUB" = "install" ] || [ -f "$STATE_FILE" ] || die "導入されていません。先に install.sh install を実行してください"
   validate_config
   write_config
-  write_state
+  mkdir -p "$BIN_DIR"
   app_install
+  write_state
+  install_ctl
   log "完了（$SUB）: $REF（$COMMIT）"
 }
 
 cmd_uninstall() {
+  check_user
   app_uninstall
   if [ -n "$PURGE" ]; then
     app_purge
+    for _d in "$CONF_DIR" "$DATA_DIR" "$STATE_DIR"; do
+      safe_to_remove "$_d" || die "削除を中止します: $_d"
+    done
     log "設定・データ・導入メタ情報を削除: $CONF_DIR $DATA_DIR $STATE_DIR"
     rm -rf "$CONF_DIR" "$DATA_DIR" "$STATE_DIR"
   fi
-  case "$DIR" in
-    ""|/|/usr|/etc|/var|/opt|/home|/root|"$HOME") die "取得先の削除を中止します: $DIR" ;;
-  esac
+  rm -f "$CTL"
+  safe_to_remove "$DIR" || die "取得先の削除を中止します: $DIR"
   [ -d "$DIR/.git" ] || die "取得先の削除を中止します（gitリポジトリではありません）: $DIR"
   log "取得先を削除: $DIR"
   cd /
@@ -259,6 +302,7 @@ cmd_status() {
   [ -f "$STATE_FILE" ] || { echo "未導入"; return 0; }
   _ref=$(kv_get "$STATE_FILE" REF)
   echo "導入先:     $DIR"
+  echo "導入方式:   $INSTALL_MODE"
   echo "参照:       $(ref_short "$_ref")（$(ref_kind "$_ref")）"
   echo "コミット:   $(kv_get "$STATE_FILE" COMMIT)"
   echo "取得元:     $(kv_get "$STATE_FILE" REPO_URL)"
@@ -269,11 +313,12 @@ cmd_status() {
 cmd_refs() {
   [ -f "$STATE_FILE" ] || die "導入されていません（$STATE_FILE がありません）"
   _url=$(kv_get "$STATE_FILE" REPO_URL) || die "導入メタ情報にREPO_URLがありません"
-  git ls-remote "$_url" "refs/heads/*" "refs/tags/*" | awk -F'\t' '
+  _out=$(git ls-remote "$_url" "refs/heads/*" "refs/tags/*") || die "取得元に接続できません: $_url"
+  printf '%s\n' "$_out" | awk -F'\t' '
     $2 ~ /\^\{\}$/ { next }
     $2 ~ /^refs\/heads\// { sub(/^refs\/heads\//, "", $2); print "branch\t" $2 }
     $2 ~ /^refs\/tags\// { sub(/^refs\/tags\//, "", $2); print "tag\t" $2 }
-  ' || die "取得元に接続できません: $_url"
+  '
 }
 
 main() {
@@ -310,6 +355,7 @@ $2"
 
   if [ -z "$COMMIT" ]; then
     if [ "$SUB" = "update" ] || { [ "$SUB" = "install" ] && [ -n "$REF" ]; }; then
+      check_user
       switch_and_reexec
     fi
   fi

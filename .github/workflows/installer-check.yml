@@ -1,0 +1,40 @@
+# 責務: インストーラの頒布（release-installer.yml）の前に通す、このプロジェクト固有の検査。失敗すると install.sh は生成・頒布されない。
+#   - src のシェルの構文・shellcheck、テスト（node --test）、仕様書の検査（spec-lint）
+name: installer-check
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: シェルの検査（構文・shellcheck）
+        run: |
+          for f in src/claude-rc-ctl src/claude-rc-run; do bash -n "$f"; done
+          shellcheck -S warning src/claude-rc-ctl src/claude-rc-run
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@nekono-dev"
+
+      - name: テスト
+        run: |
+          npm ci
+          npm test
+
+      - name: 仕様書の検査（spec-lint）
+        run: npx --yes @nekono-dev/spec-lint@1
+        env:
+          # read:packages 権限のトークン。未登録ならワークフローのトークンで読む
+          NODE_AUTH_TOKEN: ${{ secrets.SPEC_LINT_TOKEN || github.token }}

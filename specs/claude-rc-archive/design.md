@@ -8,7 +8,7 @@
 | `src/claude-rc-run`             | セッションを事前に作らない指定で remote-control を起動する        |
 | `src/claude-rc-archive.service` | 一括判定を1回実行する oneshot のユーザー単位ユニット              |
 | `src/claude-rc-archive.timer`   | 一括判定を10分ごとに起動するタイマー                              |
-| `installer/main.sh`             | 定期実行ユニットの配置・有効化・無効化・撤去と、旧ユニットの撤去  |
+| `installer/app.sh`              | 定期実行ユニットの配置・有効化・無効化・撤去と、旧ユニットの撤去  |
 | `tests/helpers.mjs`             | tmux の display-message と systemctl の停止状態を返す擬似コマンド |
 | `tests/archive.test.mjs`        | archive と定期実行ユニット、起動指定のテスト                      |
 
@@ -22,10 +22,10 @@ flowchart LR
   ctl --> run["claude-rc-run"]
   ctl --> ext_systemctl["systemctl"]
   ctl --> ext_tmux["tmux"]
-  main["main"] --> unit
+  app["app"] --> unit
   t_archive["archive.test"] --> ctl
   t_archive --> run
-  t_archive --> main
+  t_archive --> app
   t_archive --> helpers["helpers"]
 ```
 
