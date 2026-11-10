@@ -49,6 +49,7 @@ claude-rc-ctl remove myproj              # 停止して登録解除
 | `CLAUDE_RC_SPAWN`           | `same-dir` | spawn モード（`same-dir` または `worktree`。`worktree` は git リポジトリのみ） |
 | `CLAUDE_RC_PERMISSION_MODE` | `auto`     | 権限モード                                                                     |
 | `CLAUDE_RC_ARCHIVE_MINUTES` | `10080`    | アーカイブまでのアイドル時間（分）。`0` でアーカイブしない                     |
+| `CLAUDE_RC_STALE_MINUTES`   | `30`       | claude 本体の更新後、再起動までに待つアイドル時間（分）。`0` で再起動しない    |
 | `CLAUDE_RC_EFFORT`          | `medium`   | effort（`low`・`medium`・`high`・`xhigh`・`max`）                              |
 
 変更後は `claude-rc-ctl restart <名前>` で反映する。
@@ -69,6 +70,18 @@ remote-control サーバーの配下で放置されたセッションは、ア�
 - 1つのセッションが使われていれば、同じサーバーの別のセッションもアーカイブされない（サーバー単位の判定である）。
 - セッションを開いている間だけ有効なリマインダー（保存しない設定のもの）は検出できない。残したいリマインダーは保存する設定で作ること。
 - 判定は `claude-rc-ctl archive --dry-run --all` で事前に確認できる。自動実行の状態は `systemctl --user list-timers claude-rc-archive.timer` で確認する。
+
+### claude 本体の更新への追従
+
+claude 本体が更新されると実行ファイルが入れ替わり、起動済みのサーバーは削除済みの古い本体で動き続ける。この状態では、アプリから作った新しいセッションが応答しなくなる。
+
+同じ定期実行が、古い本体で動いているサーバーを検出し、次の条件をすべて満たすときに再起動する。配下にセッションがなければ、すぐに再起動する。
+
+- 配下のすべてのセッションの最終更新が、`CLAUDE_RC_STALE_MINUTES` 分（既定30分）以上前である。
+- 配下に、実行中のプロセスを持つセッションがない。
+- リマインダーが1件もない。
+
+条件を満たさない間は再起動を見送り、警告を記録する。すぐに反映したいときは `claude-rc-ctl restart <名前>` を実行する。再起動すると、配下のセッションはアプリ上でアーカイブされる。
 
 ## effort
 

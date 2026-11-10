@@ -23,3 +23,11 @@
 - [x] T-3.2: インストーラに配置・有効化・無効化・撤去と旧ユニットの撤去を追加する。
 - [x] T-3.3: 定期実行の配置と撤去をテストする。
 - 検証: `node --test tests/archive.test.mjs tests/installer.test.mjs`
+
+## Phase 4: 本体の更新の検出
+
+- 対応: D-5
+- [x] T-4.1: サーバーが削除済みの実行ファイルで動いていることを検出し、猶予時間で判定して再起動する処理を archive に追加する。
+- [x] T-4.2: 猶予時間の設定（CLAUDE_RC_STALE_MINUTES）を使い方と README に追記する。
+- [x] T-4.3: 受け入れ条件タグ付きで本体の更新のテストを追加する。
+- 検証: `node --test --test-name-pattern 本体 tests/archive.test.mjs`

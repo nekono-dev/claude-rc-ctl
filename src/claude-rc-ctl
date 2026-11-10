@@ -32,6 +32,7 @@ usage() {
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
   CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
   CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 10080、0 でアーカイブしない）
+  CLAUDE_RC_STALE_MINUTES    claude 本体の更新後、再起動までに待つアイドル時間・分（既定: 30、0 で再起動しない）
 USAGE
 }
 
@@ -50,19 +51,35 @@ PY
 
 # archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
 # 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
+# claude 本体の更新でサーバーが削除済みの実行ファイルのまま動いているときは、短い猶予時間で再起動する
+# （古い本体のサーバーでは、新しいセッションが応答しなくなるため）
 archive_one() {
-  local n="$1" dry="$2" idle pid rc=0
+  local n="$1" dry="$2" idle stale pid rc=0
   # shellcheck source=/dev/null
   idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_ARCHIVE_MINUTES:-10080}")"
   [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_ARCHIVE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
-  [ "$idle" -gt 0 ] || return 0
+  # shellcheck source=/dev/null
+  stale="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_STALE_MINUTES:-30}")"
+  [[ "$stale" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_STALE_MINUTES は整数で指定してください: $stale" >&2; return 1; }
+  [ "$idle" -gt 0 ] || [ "$stale" -gt 0 ] || return 0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0
   pid="$(tmux -L "claude-rc-$n" display-message -p -t "$n" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
-  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" <<'PY' || rc=$?
+  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" <<'PY' || rc=$?
 import json, os, re, sys, time
 
 name, server, idle_min, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+stale_min = int(sys.argv[5])
+
+# claude 本体が更新されると、起動済みのサーバーは削除済みの実行ファイルで動き続ける
+stale = False
+if stale_min > 0:
+    try:
+        stale = os.readlink(f"/proc/{server}/exe").endswith(" (deleted)")
+    except OSError:
+        pass
+if idle_min == 0 and not stale:
+    sys.exit(0)
 now = time.time()
 clk = os.sysconf("SC_CLK_TCK")
 btime = next(int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime"))
@@ -131,9 +148,9 @@ def has_reminder(cwd):
 
 sessions = sorted(kids.get(server, []))
 if not sessions:
-    sys.exit(0)
+    sys.exit(11 if stale else 0)
 server_cwd = cwd_of(server)
-all_idle = True
+verdicts = set()
 for pid in sessions:
     last, sid = last_active(pid)
     idle = int((now - last) // 60)
@@ -141,19 +158,36 @@ for pid in sessions:
         verdict = "保持(実行中)"
     elif has_reminder(cwd_of(pid)) or has_reminder(server_cwd):
         verdict = "保持(リマインダー)"
-    elif idle < idle_min:
-        verdict = "保持(アイドル不足)"
-    else:
+    elif idle_min > 0 and idle >= idle_min:
         verdict = "アーカイブ"
-    all_idle &= verdict == "アーカイブ"
+    elif stale and idle >= stale_min:
+        verdict = "本体更新"
+    else:
+        verdict = "保持(アイドル不足)"
+    verdicts.add(verdict)
     print(f"[{name}] セッション={sid} アイドル={idle}分 判定={verdict}")
-sys.exit(10 if all_idle else 0)
+if verdicts == {"アーカイブ"}:
+    sys.exit(10)
+if stale and verdicts <= {"アーカイブ", "本体更新"}:
+    sys.exit(11)
+if stale:
+    print(f"[{name}] 警告: claude 本体が更新されているが、利用中のセッションがあるため再起動を見送る", file=sys.stderr)
+sys.exit(0)
 PY
   if [ "$rc" -eq 10 ]; then
     if [ "$dry" = 1 ]; then
       echo "[$n] 対象: サーバーを再起動してセッションをアーカイブする"
     else
       echo "[$n] アーカイブ: サーバーを再起動する"
+      systemctl --user restart "$(unit "$n")"
+    fi
+    return 0
+  fi
+  if [ "$rc" -eq 11 ]; then
+    if [ "$dry" = 1 ]; then
+      echo "[$n] 対象: claude 本体が更新されたためサーバーを再起動する"
+    else
+      echo "[$n] 本体更新: サーバーを再起動する"
       systemctl --user restart "$(unit "$n")"
     fi
     return 0

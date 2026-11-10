@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs"
@@ -27,8 +30,21 @@ const alive = (pid) => {
 /**
  * 擬似サーバー（sh）と、指定ディレクトリを cwd とする子プロセス（セッション）を起動する。セッションが0件のサーバーは子を持たない。
  * busy が真の子は、実行中状態の孫プロセスを持つ。
+ * stale が真のサーバーは、起動後に実行ファイルを削除する（claude 本体の更新で入れ替わった状態）。
  */
-async function makeServer(e, sessions) {
+async function makeServer(e, sessions, { stale } = {}) {
+  // 削除してよい実行ファイルの複製（サーバー本体になる sh と、セッションなしのときに置き換わる sleep）
+  const copies = { sh: "sh", sleep: "sleep" }
+  if (stale)
+    for (const c of Object.keys(copies)) {
+      // 擬似コマンドではなく実物を複製する
+      const src = realpathSync(
+        e.run("sh", ["-c", `PATH=/usr/bin:/bin command -v ${c}`]).out.trim(),
+      )
+      copies[c] = join(e.home, `${c}-copy-${Date.now()}`)
+      copyFileSync(src, copies[c])
+      chmodSync(copies[c], 0o755)
+    }
   const files = sessions.map((_, i) => join(e.home, `pid${i}-${Date.now()}`))
   const body = sessions
     .map(({ dir, busy }, i) => {
@@ -38,14 +54,15 @@ async function makeServer(e, sessions) {
       return `(cd '${dir}' && exec sh -c 'echo $$ > ${files[i]}; ${tail}') &`
     })
     .join("\n")
-  const script = sessions.length ? `${body}\nwait` : "exec sleep 300"
-  const server = spawn("sh", ["-c", script], {
+  const script = sessions.length ? `${body}\nwait` : `exec ${copies.sleep} 300`
+  const server = spawn(copies.sh, ["-c", script], {
     detached: true,
     stdio: "ignore",
   })
   for (let n = 0; n < 100 && !files.every((f) => existsSync(f)); n++)
     await sleep(50)
-  await sleep(100)
+  await sleep(stale ? 300 : 100)
+  if (stale) for (const c of Object.values(copies)) unlinkSync(c)
   const pids = files.map((f) => Number(readFileSync(f, "utf8").trim()))
   const stop = () => {
     try {
@@ -79,13 +96,18 @@ function makeProject(e, name, minutes, { reminder } = {}) {
 const RESTART = (n) => `systemctl --user restart claude-rc@${n}.service`
 
 /** 1インスタンスに対して archive を実行し、再起動されたかを返す */
-async function scenario(sessions, { idle, args = ["archive", "inst"] } = {}) {
+async function scenario(
+  sessions,
+  { idle, grace, stale, args = ["archive", "inst"] } = {},
+) {
   const e = makeEnv()
   e.register("inst", "/x")
-  if (idle !== undefined)
+  if (idle !== undefined || grace !== undefined)
     writeFileSync(
       join(e.confDir, "inst.env"),
-      `CLAUDE_RC_DIR=/x\nCLAUDE_RC_ARCHIVE_MINUTES=${idle}\n`,
+      "CLAUDE_RC_DIR=/x\n" +
+        (idle !== undefined ? `CLAUDE_RC_ARCHIVE_MINUTES=${idle}\n` : "") +
+        (grace !== undefined ? `CLAUDE_RC_STALE_MINUTES=${grace}\n` : ""),
     )
   const dirs = sessions.map((s) =>
     makeProject(e, "s", s.minutes, { reminder: s.reminder }),
@@ -93,6 +115,7 @@ async function scenario(sessions, { idle, args = ["archive", "inst"] } = {}) {
   const srv = await makeServer(
     e,
     sessions.map((s, i) => ({ dir: dirs[i], busy: s.busy })),
+    { stale },
   )
   try {
     const r = e.run(CTL, args, { STUB_PANE_PID_inst: String(srv.pid) })
@@ -276,4 +299,77 @@ test("claude-rc-archive/AC-15: 登録済みインスタンスが10件のとき�
   const r = e.run(CTL, ["archive", "--all"])
   assert.equal(r.status, 0, r.err)
   assert.ok(r.ms < 5000, `${r.ms}ms`)
+})
+
+test("claude-rc-archive/AC-16: 本体が更新されたサーバーにセッションがないとき、サーバーが再起動される", async () => {
+  const { r, restarted } = await scenario([], { stale: true })
+  assert.equal(r.status, 0, r.err)
+  assert.ok(restarted)
+  assert.match(r.out, /\[inst\] 本体更新: サーバーを再起動する/)
+  // アーカイブの閾値が 0 でも、本体の更新による再起動は行う
+  assert.ok((await scenario([], { stale: true, idle: 0 })).restarted)
+})
+
+test("claude-rc-archive/AC-17: 本体が更新されたサーバーで、全セッションの更新が猶予時間より古いとき、アーカイブの閾値に届いていなくてもサーバーが再起動される", async () => {
+  const { r, restarted } = await scenario([{ minutes: 31 }, { minutes: 90 }], {
+    stale: true,
+  })
+  assert.equal(r.status, 0, r.err)
+  assert.ok(restarted)
+  assert.match(r.out, /\[inst\] セッション=- アイドル=31分 判定=本体更新/)
+  // 本体が更新されていなければ、同じセッションでも再起動されない
+  assert.ok(!(await scenario([{ minutes: 31 }, { minutes: 90 }])).restarted)
+})
+
+test("claude-rc-archive/AC-18: 本体が更新されたサーバーでも、猶予時間内の更新・実行中・リマインダーのセッションがあれば、再起動されない", async () => {
+  const recent = await scenario([{ minutes: 90 }, { minutes: 5 }], {
+    stale: true,
+  })
+  assert.ok(!recent.restarted)
+  assert.match(recent.r.err, /\[inst\] 警告: claude 本体が更新されているが/)
+  assert.ok(
+    !(await scenario([{ minutes: 90, busy: true }], { stale: true })).restarted,
+  )
+  assert.ok(
+    !(
+      await scenario([{ minutes: 90, reminder: '{"tasks":[{"id":"a"}]}' }], {
+        stale: true,
+      })
+    ).restarted,
+  )
+})
+
+test("claude-rc-archive/AC-19: 本体が更新されていないサーバーにセッションがないとき、サーバーは再起動されない", async () => {
+  const { r, restarted } = await scenario([])
+  assert.equal(r.status, 0, r.err)
+  assert.ok(!restarted)
+})
+
+test("claude-rc-archive/AC-20: 猶予時間を指定するとその分数で判定され、0 のときは本体が更新されていても再起動されない", async () => {
+  assert.ok(
+    !(await scenario([{ minutes: 31 }], { stale: true, grace: 60 })).restarted,
+  )
+  assert.ok(
+    (await scenario([{ minutes: 61 }], { stale: true, grace: 60 })).restarted,
+  )
+  assert.ok(!(await scenario([], { stale: true, grace: 0 })).restarted)
+  assert.ok(
+    !(await scenario([{ minutes: 90 }], { stale: true, grace: 0 })).restarted,
+  )
+  const bad = await scenario([], { stale: true, grace: "abc" })
+  assert.equal(bad.r.status, 1)
+  assert.match(bad.r.err, /CLAUDE_RC_STALE_MINUTES は整数で指定してください/)
+})
+
+test("claude-rc-archive/AC-21: 確認のみを指定すると、本体の更新が理由であることが表示され、サーバーは再起動されない", async () => {
+  const { r, restarted } = await scenario([{ minutes: 90 }], {
+    stale: true,
+    args: ["archive", "--dry-run", "inst"],
+  })
+  assert.equal(r.status, 0, r.err)
+  assert.ok(!restarted)
+  assert.match(
+    r.out,
+    /\[inst\] 対象: claude 本体が更新されたためサーバーを再起動する/,
+  )
 })
