@@ -33,18 +33,21 @@ const alive = (pid) => {
  * stale が真のサーバーは、起動後に実行ファイルを削除する（claude 本体の更新で入れ替わった状態）。
  */
 async function makeServer(e, sessions, { stale } = {}) {
-  // 削除してよい実行ファイルの複製（サーバー本体になる sh と、セッションなしのときに置き換わる sleep）
-  const copies = { sh: "sh", sleep: "sleep" }
-  if (stale)
-    for (const c of Object.keys(copies)) {
-      // 擬似コマンドではなく実物を複製する
-      const src = realpathSync(
-        e.run("sh", ["-c", `PATH=/usr/bin:/bin command -v ${c}`]).out.trim(),
-      )
-      copies[c] = join(e.home, `${c}-copy-${Date.now()}`)
-      copyFileSync(src, copies[c])
-      chmodSync(copies[c], 0o755)
-    }
+  // 削除してよい sh の複製をサーバー本体にする（擬似コマンドではなく実物を複製する）
+  let shell = "sh"
+  // セッションなしで本体を保つための待ち受け口（sleep へ置き換わると実行ファイルが変わってしまう）
+  const fifo = join(e.home, `fifo-${Date.now()}`)
+  if (stale) {
+    shell = join(e.home, `sh-copy-${Date.now()}`)
+    copyFileSync(
+      realpathSync(
+        e.run("sh", ["-c", "PATH=/usr/bin:/bin command -v sh"]).out.trim(),
+      ),
+      shell,
+    )
+    chmodSync(shell, 0o755)
+    e.run("mkfifo", [fifo])
+  }
   const files = sessions.map((_, i) => join(e.home, `pid${i}-${Date.now()}`))
   const body = sessions
     .map(({ dir, busy }, i) => {
@@ -54,15 +57,17 @@ async function makeServer(e, sessions, { stale } = {}) {
       return `(cd '${dir}' && exec sh -c 'echo $$ > ${files[i]}; ${tail}') &`
     })
     .join("\n")
-  const script = sessions.length ? `${body}\nwait` : `exec ${copies.sleep} 300`
-  const server = spawn(copies.sh, ["-c", script], {
+  // 読み書き両用で開くと開く時点では止まらず、読み取りで待ち続ける（子プロセスを作らない）
+  const idleScript = stale ? `exec 3<>'${fifo}'; read x <&3` : "exec sleep 300"
+  const script = sessions.length ? `${body}\nwait` : idleScript
+  const server = spawn(shell, ["-c", script], {
     detached: true,
     stdio: "ignore",
   })
   for (let n = 0; n < 100 && !files.every((f) => existsSync(f)); n++)
     await sleep(50)
   await sleep(stale ? 300 : 100)
-  if (stale) for (const c of Object.values(copies)) unlinkSync(c)
+  if (stale) unlinkSync(shell)
   const pids = files.map((f) => Number(readFileSync(f, "utf8").trim()))
   const stop = () => {
     try {
