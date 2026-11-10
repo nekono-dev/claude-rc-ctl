@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url"
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 const STUBS = {
-  // 呼び出しを $HOME/calls.log へ記録する。is-active は STUB_INACTIVE で指定した名前以外 active を返す
+  // 呼び出しを $HOME/calls.log へ記録する。tmux の capture-pane は STUB_PANE_<名前> があればその内容を返す。is-active は STUB_INACTIVE で指定した名前以外 active を返す
   systemctl: `echo "systemctl $*" >> "$HOME/calls.log"
 case "$*" in *is-active*)
   case "$*" in *"claude-rc@\${STUB_INACTIVE:-NONE}.service"*) echo inactive; exit 3 ;; esac
@@ -25,7 +25,7 @@ esac
 exit 0`,
   tmux: `echo "tmux $*" >> "$HOME/calls.log"
 case "$*" in
-  *capture-pane*) echo PANE_OUTPUT ;;
+  *capture-pane*) eval "n=\\\${$#}"; printenv "STUB_PANE_$n" || echo PANE_OUTPUT ;;
   *display-message*) printenv "STUB_PANE_PID_$6" ;;
 esac
 exit 0`,

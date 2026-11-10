@@ -396,3 +396,65 @@ test("claude-rc-archive/AC-22: 猶予時間が未指定のとき、本体が更�
   // 閾値も未指定なら、30分を超えた程度のセッションは残る
   assert.ok(!(await scenario([{ minutes: 90 }], { stale: true })).restarted)
 })
+
+const FAILED =
+  "[08:26:18] Session failed: spawn error: ENOENT: no such file or directory, posix_spawn '/x/claude.exe' cse_01"
+
+test("claude-rc-archive/AC-23: サーバーの画面出力にセッションの起動失敗の記録があると、警告と対処が表示され、サーバーは再起動されない", async () => {
+  const e = makeEnv()
+  e.register("inst", "/x")
+  const srv = await makeServer(e, [])
+  try {
+    const r = e.run(CTL, ["archive", "inst"], {
+      STUB_PANE_PID_inst: String(srv.pid),
+      STUB_PANE_inst: `Connected\n${FAILED}\nCapacity: 0/32`,
+    })
+    assert.equal(r.status, 0, r.err)
+    assert.match(
+      r.err,
+      /\[inst\] 警告: セッションの起動に失敗した記録が 1 件ある（最新: \[08:26:18\] Session failed: spawn error: ENOENT/,
+    )
+    assert.match(r.err, /\[inst\] 対処: .*メッセージを送り直す/)
+    assert.ok(!e.calls().includes(RESTART("inst")))
+    // 記録がなければ警告しない
+    const e2 = makeEnv()
+    e2.register("inst", "/x")
+    const quiet = e2.run(CTL, ["archive", "inst"], {
+      STUB_PANE_PID_inst: String(srv.pid),
+    })
+    assert.equal(quiet.err, "")
+  } finally {
+    srv.stop()
+  }
+})
+
+test("claude-rc-archive/AC-24: 警告済みの起動失敗は次回の判定で繰り返し警告されず、新しい失敗とサーバーの再起動後の失敗は警告される", async () => {
+  const e = makeEnv()
+  e.register("inst", "/x")
+  const srv = await makeServer(e, [])
+  const srv2 = await makeServer(e, [])
+  const run = (pane, pid = srv.pid, args = ["archive", "inst"]) =>
+    e.run(CTL, args, {
+      STUB_PANE_PID_inst: String(pid),
+      STUB_PANE_inst: pane,
+    })
+  try {
+    // 確認のみでは記録しないので、次の判定でも警告される
+    assert.match(
+      run(FAILED, srv.pid, ["archive", "--dry-run", "inst"]).err,
+      /1 件ある/,
+    )
+    assert.match(run(FAILED).err, /1 件ある/)
+    assert.equal(run(FAILED).err, "")
+    assert.match(run(`${FAILED}\n${FAILED}`).err, /1 件ある/)
+    assert.equal(run(`${FAILED}\n${FAILED}`).err, "")
+    // サーバーが再起動されてプロセスが替わると、件数を数え直す
+    assert.match(run(FAILED, srv2.pid).err, /1 件ある/)
+    // 登録解除で記録が消える
+    e.run(CTL, ["remove", "inst"])
+    assert.ok(!existsSync(join(e.home, ".local/state/claude-rc/inst.failed")))
+  } finally {
+    srv.stop()
+    srv2.stop()
+  }
+})

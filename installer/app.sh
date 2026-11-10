@@ -33,6 +33,7 @@ app_uninstall() {
 }
 
 app_purge() {
+  rm -rf "$HOME/.local/state/claude-rc"
   rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-archive.timer"
   systemctl --user daemon-reload 2>/dev/null || true
 }

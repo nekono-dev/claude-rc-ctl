@@ -33,3 +33,12 @@
 - [x] T-4.4: 猶予時間の既定を、アーカイブの閾値の既定と同じ10080分に変更し、使い方と README を更新する。
 - [x] T-4.5: 既定の猶予時間のテストを受け入れ条件タグ付きで追加し、既存のテストは猶予時間を明示する。
 - 検証: `node --test --test-name-pattern 本体 tests/archive.test.mjs`
+
+## Phase 5: 起動失敗の警告
+
+- 対応: D-6
+- [x] T-5.1: 擬似コマンドの tmux に、capture-pane の結果を差し替える指定を追加する。
+- [x] T-5.2: tmux の capture-pane の結果から起動失敗の記録を探し、警告済みの件数を記録して警告する処理を archive に追加する。
+- [x] T-5.3: 登録解除とパージで記録を削除する。
+- [x] T-5.4: 受け入れ条件タグ付きで起動失敗の警告のテストを追加し、README に追記する。
+- 検証: `node --test --test-name-pattern 起動失敗 tests/archive.test.mjs`

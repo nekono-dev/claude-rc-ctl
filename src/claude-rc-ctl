@@ -3,6 +3,8 @@
 set -euo pipefail
 
 CONF_DIR="$HOME/.config/claude-rc"
+# 判定の記録（警告済みの起動失敗の件数）を置く場所
+STATE_DIR="$HOME/.local/state/claude-rc"
 unit() { echo "claude-rc@$1.service"; }
 
 usage() {
@@ -49,10 +51,30 @@ except Exception:
 PY
 }
 
+# report_failures <name> <pid> <dry(0|1)>: サーバーの画面出力から、セッションの起動失敗の記録を探して警告する
+# claude 本体の更新の途中など、実行ファイルがない間に作られたセッションは起動に失敗し、応答しないまま残る
+# 同じ記録を繰り返し警告しないよう、警告済みの件数をサーバーのプロセスごとに記録する
+report_failures() {
+  local n="$1" pid="$2" dry="$3" lines count seen=0 oldpid="" old="" f="$STATE_DIR/$1.failed"
+  lines="$(tmux -L "claude-rc-$n" capture-pane -p -J -S - -t "$n" 2>/dev/null | grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] Session failed:' || true)"
+  count=0
+  [ -z "$lines" ] || count="$(printf '%s\n' "$lines" | wc -l)"
+  if [ -f "$f" ]; then
+    read -r oldpid old < "$f" || true
+    if [ "$oldpid" = "$pid" ] && [[ "$old" =~ ^[0-9]+$ ]]; then seen="$old"; fi
+  fi
+  [ "$count" -ne "$seen" ] || return 0
+  if [ "$count" -gt "$seen" ]; then
+    echo "[$n] 警告: セッションの起動に失敗した記録が $((count - seen)) 件ある（最新: $(printf '%s\n' "$lines" | tail -n 1)）" >&2
+    echo "[$n] 対処: 応答しないセッションにはメッセージを送り直す。繰り返すときは claude-rc-ctl restart $n を実行する" >&2
+  fi
+  [ "$dry" = 1 ] || { mkdir -p "$STATE_DIR"; echo "$pid $count" > "$f"; }
+}
+
 # archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
 # 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
 # claude 本体の更新でサーバーが削除済みの実行ファイルのまま動いているときは、猶予時間（既定はアーカイブと同じ1週間）で再起動する
-# （古い本体のサーバーでは、新しいセッションが応答しなくなるため。再起動するとセッションがアーカイブされるので、
+# （古い版のサーバーが、新しい版のセッションを起動し続けるのを避けるため。再起動するとセッションがアーカイブされるので、
 # 猶予時間を短くすると、本体の更新のたびにセッションが早くアーカイブされる）
 archive_one() {
   local n="$1" dry="$2" idle stale pid rc=0
@@ -62,17 +84,18 @@ archive_one() {
   # shellcheck source=/dev/null
   stale="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_STALE_MINUTES:-10080}")"
   [[ "$stale" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_STALE_MINUTES は整数で指定してください: $stale" >&2; return 1; }
-  [ "$idle" -gt 0 ] || [ "$stale" -gt 0 ] || return 0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0
   pid="$(tmux -L "claude-rc-$n" display-message -p -t "$n" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
+  report_failures "$n" "$pid" "$dry"
+  [ "$idle" -gt 0 ] || [ "$stale" -gt 0 ] || return 0
   python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" <<'PY' || rc=$?
 import json, os, re, sys, time
 
 name, server, idle_min, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 stale_min = int(sys.argv[5])
 
-# claude 本体が更新されると、起動済みのサーバーは削除済みの実行ファイルで動き続ける
+# claude 本体が更新されると、起動済みのサーバーは削除済みの実行ファイルで動き続ける（新しいセッションは新しい版で起動する）
 stale = False
 if stale_min > 0:
     try:
@@ -228,7 +251,7 @@ case "$cmd" in
   remove)
     need_name "$@"
     systemctl --user disable --now "$(unit "$1")" || true
-    rm -f "$CONF_DIR/$1.env"
+    rm -f "$CONF_DIR/$1.env" "$STATE_DIR/$1.failed"
     echo "登録解除しました: $1"
     ;;
   list)
