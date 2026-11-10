@@ -49,7 +49,7 @@ claude-rc-ctl remove myproj              # 停止して登録解除
 | `CLAUDE_RC_SPAWN`           | `same-dir` | spawn モード（`same-dir` または `worktree`。`worktree` は git リポジトリのみ） |
 | `CLAUDE_RC_PERMISSION_MODE` | `auto`     | 権限モード                                                                     |
 | `CLAUDE_RC_ARCHIVE_MINUTES` | `10080`    | アーカイブまでのアイドル時間（分）。`0` でアーカイブしない                     |
-| `CLAUDE_RC_STALE_MINUTES`   | `30`       | claude 本体の更新後、再起動までに待つアイドル時間（分）。`0` で再起動しない    |
+| `CLAUDE_RC_STALE_MINUTES`   | `10080`    | claude 本体の更新後、再起動までに待つアイドル時間（分）。`0` で再起動しない    |
 | `CLAUDE_RC_EFFORT`          | `medium`   | effort（`low`・`medium`・`high`・`xhigh`・`max`）                              |
 
 変更後は `claude-rc-ctl restart <名前>` で反映する。
@@ -77,11 +77,13 @@ claude 本体が更新されると実行ファイルが入れ替わり、起動�
 
 同じ定期実行が、古い本体で動いているサーバーを検出し、次の条件をすべて満たすときに再起動する。配下にセッションがなければ、すぐに再起動する。
 
-- 配下のすべてのセッションの最終更新が、`CLAUDE_RC_STALE_MINUTES` 分（既定30分）以上前である。
+- 配下のすべてのセッションの最終更新が、`CLAUDE_RC_STALE_MINUTES` 分（既定10080分＝1週間）以上前である。
 - 配下に、実行中のプロセスを持つセッションがない。
 - リマインダーが1件もない。
 
 条件を満たさない間は再起動を見送り、警告を記録する。すぐに反映したいときは `claude-rc-ctl restart <名前>` を実行する。再起動すると、配下のセッションはアプリ上でアーカイブされる。
+
+猶予時間の既定はアーカイブの閾値と同じ1週間である。本体は頻繁に更新されるため、猶予時間を短くすると、更新のたびに、その時間だけ放置したセッションがアーカイブされる。新しいセッションの応答を優先したいインスタンスだけ、`CLAUDE_RC_STALE_MINUTES` を短くする。
 
 ## effort
 

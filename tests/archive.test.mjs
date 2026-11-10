@@ -318,6 +318,7 @@ test("claude-rc-archive/AC-16: 本体が更新されたサーバーにセッシ�
 test("claude-rc-archive/AC-17: 本体が更新されたサーバーで、全セッションの更新が猶予時間より古いとき、アーカイブの閾値に届いていなくてもサーバーが再起動される", async () => {
   const { r, restarted } = await scenario([{ minutes: 31 }, { minutes: 90 }], {
     stale: true,
+    grace: 30,
   })
   assert.equal(r.status, 0, r.err)
   assert.ok(restarted)
@@ -329,16 +330,19 @@ test("claude-rc-archive/AC-17: 本体が更新されたサーバーで、全セ�
 test("claude-rc-archive/AC-18: 本体が更新されたサーバーでも、猶予時間内の更新・実行中・リマインダーのセッションがあれば、再起動されない", async () => {
   const recent = await scenario([{ minutes: 90 }, { minutes: 5 }], {
     stale: true,
+    grace: 30,
   })
   assert.ok(!recent.restarted)
   assert.match(recent.r.err, /\[inst\] 警告: claude 本体が更新されているが/)
   assert.ok(
-    !(await scenario([{ minutes: 90, busy: true }], { stale: true })).restarted,
+    !(await scenario([{ minutes: 90, busy: true }], { stale: true, grace: 30 }))
+      .restarted,
   )
   assert.ok(
     !(
       await scenario([{ minutes: 90, reminder: '{"tasks":[{"id":"a"}]}' }], {
         stale: true,
+        grace: 30,
       })
     ).restarted,
   )
@@ -369,6 +373,7 @@ test("claude-rc-archive/AC-20: 猶予時間を指定するとその分数で判�
 test("claude-rc-archive/AC-21: 確認のみを指定すると、本体の更新が理由であることが表示され、サーバーは再起動されない", async () => {
   const { r, restarted } = await scenario([{ minutes: 90 }], {
     stale: true,
+    grace: 30,
     args: ["archive", "--dry-run", "inst"],
   })
   assert.equal(r.status, 0, r.err)
@@ -377,4 +382,17 @@ test("claude-rc-archive/AC-21: 確認のみを指定すると、本体の更新�
     r.out,
     /\[inst\] 対象: claude 本体が更新されたためサーバーを再起動する/,
   )
+})
+
+test("claude-rc-archive/AC-22: 猶予時間が未指定のとき、本体が更新されたサーバーでも、10079分前の更新は残り、10081分前の更新は再起動される", async () => {
+  // アーカイブの閾値を無効にして、猶予時間の既定だけで判定させる
+  const kept = await scenario([{ minutes: 10079 }], { stale: true, idle: 0 })
+  assert.equal(kept.r.status, 0, kept.r.err)
+  assert.ok(!kept.restarted)
+  assert.match(kept.r.err, /\[inst\] 警告: claude 本体が更新されているが/)
+  const gone = await scenario([{ minutes: 10081 }], { stale: true, idle: 0 })
+  assert.ok(gone.restarted)
+  assert.match(gone.r.out, /アイドル=10081分 判定=本体更新/)
+  // 閾値も未指定なら、30分を超えた程度のセッションは残る
+  assert.ok(!(await scenario([{ minutes: 90 }], { stale: true })).restarted)
 })
