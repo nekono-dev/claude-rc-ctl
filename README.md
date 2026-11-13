@@ -95,6 +95,12 @@ claude 本体が更新されると実行ファイルが入れ替わり、起動�
 journalctl --user -u claude-rc-archive.service | grep 警告
 ```
 
+### 認証に失敗して止まったセッション
+
+アプリに「このセッションを実行しているコンピューターの Claude Code で、再度サインインする必要があります」と出るのは、資格情報の期限切れとは限らない。通信が一時的に遮断される（Cloudflare の `403 Attention Required` など）と、claude はこれを認証失敗として扱い、セッションが止まる。**そのセッションにメッセージを送り直す**と、資格情報が有効ならそのまま続けられる。
+
+同じ定期実行が、セッションの記録の最後が `Failed to authenticate` で終わっているものを検出して警告する。同じ記録は繰り返し警告しない。繰り返すときは `claude auth status` で資格情報を確認し、無効なら `claude` でサインインし直す。
+
 ## effort
 
 `CLAUDE_RC_EFFORT`（既定 `medium`）は、環境変数 `CLAUDE_CODE_EFFORT_LEVEL` として各セッションへ継承され、実際の思考量はこの値になる（transcript の `effort` で確認できる）。アプリのセッション画面の effort 表示は、アプリ側が子セッションへ渡す `--effort` の既定値のままで、実際の値と異なる場合がある。

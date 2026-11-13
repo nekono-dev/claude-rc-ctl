@@ -34,11 +34,14 @@
 - [x] T-4.5: 既定の猶予時間のテストを受け入れ条件タグ付きで追加し、既存のテストは猶予時間を明示する。
 - 検証: `node --test --test-name-pattern 本体 tests/archive.test.mjs`
 
-## Phase 5: 起動失敗の警告
+## Phase 5: 起動失敗と認証失敗の警告
 
-- 対応: D-6
+- 対応: D-6, D-7
 - [x] T-5.1: 擬似コマンドの tmux に、capture-pane の結果を差し替える指定を追加する。
 - [x] T-5.2: tmux の capture-pane の結果から起動失敗の記録を探し、警告済みの件数を記録して警告する処理を archive に追加する。
 - [x] T-5.3: 登録解除とパージで記録を削除する。
 - [x] T-5.4: 受け入れ条件タグ付きで起動失敗の警告のテストを追加し、README に追記する。
-- 検証: `node --test --test-name-pattern 起動失敗 tests/archive.test.mjs`
+- [x] T-5.5: セッションの記録の最後が認証失敗のものを探し、警告済みの記録を保存して警告する処理を archive に追加する。
+- [x] T-5.6: 登録解除とパージで記録を削除する。
+- [x] T-5.7: 受け入れ条件タグ付きで認証失敗の警告のテストを追加し、README に追記する。
+- 検証: `node --test --test-name-pattern '起動失敗|認証失敗' tests/archive.test.mjs`

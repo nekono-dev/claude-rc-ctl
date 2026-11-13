@@ -458,3 +458,92 @@ test("claude-rc-archive/AC-24: 警告済みの起動失敗は次回の判定で�
     srv2.stop()
   }
 })
+
+/** 認証失敗の記録（セッションの記録ファイル）を置く */
+function putTranscript(e, dir, sid, records) {
+  const enc = dir.replace(/[^A-Za-z0-9]/g, "-")
+  const base = join(e.home, ".claude/projects", enc)
+  mkdirSync(base, { recursive: true })
+  const file = join(base, `${sid}.jsonl`)
+  writeFileSync(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n")
+  return file
+}
+const AUTH_FAIL = (uuid) => ({
+  type: "assistant",
+  uuid,
+  timestamp: "2026-11-13T10:19:15.173Z",
+  isApiErrorMessage: true,
+  message: {
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare",
+      },
+    ],
+  },
+})
+const OK = {
+  type: "assistant",
+  uuid: "ok",
+  message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+}
+
+test("claude-rc-archive/AC-25: セッションの記録の最後が認証失敗だと、警告と対処が表示され、サーバーは再起動されない。回復したセッションや、サーバーの起動前の記録、別のディレクトリの記録は警告されない", async () => {
+  const e = makeEnv()
+  e.register("inst", "/x")
+  const srv = await makeServer(e, [])
+  const run = () =>
+    e.run(CTL, ["archive", "inst"], { STUB_PANE_PID_inst: String(srv.pid) })
+  try {
+    // 回復済み（最後が通常の応答）、別のディレクトリ、サーバーの起動前の記録は警告されない
+    putTranscript(e, "/x", "s-ok", [AUTH_FAIL("u0"), OK])
+    putTranscript(e, "/y", "s-other", [AUTH_FAIL("u1")])
+    const old = putTranscript(e, "/x", "s-old", [AUTH_FAIL("u2")])
+    utimesSync(old, 1, 1)
+    assert.equal(run().err, "")
+    // 認証失敗で止まったセッションは警告される
+    putTranscript(e, "/x", "s-stuck", [OK, AUTH_FAIL("u3")])
+    const r = run()
+    assert.equal(r.status, 0, r.err)
+    assert.match(
+      r.err,
+      /\[inst\] 警告: 認証に失敗して止まったセッションの記録が 1 件ある（最新: 2026-11-13T10:19:15.173Z s-stuck Failed to authenticate\. API Error: 403/,
+    )
+    assert.match(
+      r.err,
+      /\[inst\] 対処: .*メッセージを送り直す.*claude auth status/,
+    )
+    assert.ok(!e.calls().includes(RESTART("inst")))
+  } finally {
+    srv.stop()
+  }
+})
+
+test("claude-rc-archive/AC-26: 警告済みの認証失敗は次回の判定で繰り返し警告されず、新しい失敗は警告され、確認のみでは記録されない", async () => {
+  const e = makeEnv()
+  e.register("inst", "/x")
+  const srv = await makeServer(e, [])
+  const run = (args = ["archive", "inst"]) =>
+    e.run(CTL, args, { STUB_PANE_PID_inst: String(srv.pid) })
+  try {
+    putTranscript(e, "/x", "s1", [AUTH_FAIL("u1")])
+    assert.match(run(["archive", "--dry-run", "inst"]).err, /1 件ある/)
+    assert.match(run().err, /1 件ある/)
+    assert.equal(run().err, "")
+    // 別のセッションの新しい失敗だけが警告される
+    putTranscript(e, "/x", "s2", [AUTH_FAIL("u2")])
+    assert.match(run().err, /1 件ある（最新: .* s2 /)
+    assert.equal(run().err, "")
+    // 回復したあとに同じセッションが再び失敗すると、新しい記録として警告される
+    putTranscript(e, "/x", "s2", [AUTH_FAIL("u2"), OK])
+    assert.equal(run().err, "")
+    putTranscript(e, "/x", "s2", [AUTH_FAIL("u2"), OK, AUTH_FAIL("u4")])
+    assert.match(run().err, /1 件ある/)
+    // 登録解除で記録が消える
+    e.run(CTL, ["remove", "inst"])
+    assert.ok(!existsSync(join(e.home, ".local/state/claude-rc/inst.authfail")))
+  } finally {
+    srv.stop()
+  }
+})

@@ -71,6 +71,84 @@ report_failures() {
   [ "$dry" = 1 ] || { mkdir -p "$STATE_DIR"; echo "$pid $count" > "$f"; }
 }
 
+# report_auth_failures <name> <pid> <dry(0|1)>: セッションの記録から、認証失敗で止まったセッションを探して警告する
+# 通信の一時的な遮断（Cloudflare の 403 など）でも claude は「認証失敗」として扱い、アプリに再サインインを求める状態で止まる
+# 資格情報そのものは有効なことが多いため、サーバーは再起動せず、警告だけを行う
+# 記録の最後が認証失敗のセッションだけを対象とする（その後に応答があれば回復済み）。警告済みのセッションの記録は state に残す
+report_auth_failures() {
+  local n="$1" pid="$2" dry="$3" dir f="$STATE_DIR/$1.authfail" out
+  # shellcheck source=/dev/null
+  dir="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_DIR:-}")"
+  [ -n "$dir" ] || return 0
+  out="$(python3 - "$pid" "$dir" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$f" "$dry" <<'PY' || true
+import json, os, re, sys
+
+pid, cdir, conf, state, dry = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+# サーバーの起動時刻（これより前の記録は、再起動で別のサーバーのものになっている）
+clk = os.sysconf("SC_CLK_TCK")
+try:
+    btime = next(int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime"))
+    started = btime + int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19]) / clk
+except (OSError, ValueError, StopIteration, IndexError):
+    sys.exit(0)
+
+# worktree で起動したセッションの作業先は、対象ディレクトリの配下になる（記録の置き場所の名前は、記号をすべて - にしたもの）
+enc = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cdir))
+root = os.path.join(conf, "projects")
+try:
+    dirs = [d for d in os.listdir(root) if d == enc or d.startswith(enc + "-")]
+except OSError:
+    sys.exit(0)
+
+found = {}
+for d in dirs:
+    base = os.path.join(root, d)
+    try:
+        names = os.listdir(base)
+    except OSError:
+        continue
+    for fn in names:
+        if not fn.endswith(".jsonl"):
+            continue
+        path = os.path.join(base, fn)
+        try:
+            if os.stat(path).st_mtime < started:
+                continue
+            with open(path, "rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 1048576))
+                lines = [x for x in fh.read().split(b"\n") if x.strip()]
+            rec = json.loads(lines[-1])
+        except (OSError, ValueError, IndexError):
+            continue
+        # 末尾の attachment 等は記録の種類で読み飛ばさず、最後の記録が認証失敗かどうかだけを見る
+        msg = rec.get("message") if isinstance(rec, dict) else None
+        if not isinstance(msg, dict) or rec.get("type") != "assistant" or not rec.get("isApiErrorMessage"):
+            continue
+        text = "".join(c.get("text", "") for c in msg.get("content", []) if isinstance(c, dict))
+        if text.startswith("Failed to authenticate"):
+            found[rec.get("uuid") or fn] = (rec.get("timestamp") or "", fn[:-6], text.strip())
+
+try:
+    seen = set(open(state).read().split())
+except OSError:
+    seen = set()
+for key, (ts, sid, text) in sorted(found.items(), key=lambda kv: kv[1][0]):
+    if key not in seen:
+        print(f"{ts} {sid} {text}")
+if dry != "1":
+    os.makedirs(os.path.dirname(state), exist_ok=True)
+    # 回復したセッションの分は捨てる（同じ失敗が再び起きれば、新しい記録として警告される）
+    open(state, "w").write("".join(k + "\n" for k in found))
+PY
+)"
+  [ -z "$out" ] || {
+    echo "[$n] 警告: 認証に失敗して止まったセッションの記録が $(printf '%s\n' "$out" | wc -l) 件ある（最新: $(printf '%s\n' "$out" | tail -n 1)）" >&2
+    echo "[$n] 対処: 通信の一時的な遮断でも起きる。そのセッションにメッセージを送り直す。繰り返すときは claude auth status で資格情報を確認する" >&2
+  }
+}
+
 # archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
 # 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
 # claude 本体の更新でサーバーが削除済みの実行ファイルのまま動いているときは、猶予時間（既定はアーカイブと同じ1週間）で再起動する
@@ -88,6 +166,7 @@ archive_one() {
   pid="$(tmux -L "claude-rc-$n" display-message -p -t "$n" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
   report_failures "$n" "$pid" "$dry"
+  report_auth_failures "$n" "$pid" "$dry"
   [ "$idle" -gt 0 ] || [ "$stale" -gt 0 ] || return 0
   python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" <<'PY' || rc=$?
 import json, os, re, sys, time
@@ -251,7 +330,7 @@ case "$cmd" in
   remove)
     need_name "$@"
     systemctl --user disable --now "$(unit "$1")" || true
-    rm -f "$CONF_DIR/$1.env" "$STATE_DIR/$1.failed"
+    rm -f "$CONF_DIR/$1.env" "$STATE_DIR/$1.failed" "$STATE_DIR/$1.authfail"
     echo "登録解除しました: $1"
     ;;
   list)
