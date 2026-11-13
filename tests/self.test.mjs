@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import test from "node:test"
 import { installFixture, makeEnv } from "./helpers.mjs"
@@ -22,9 +22,11 @@ test("claude-rc-ctl/AC-15: 取得元に新しいコミットがあるとき更�
   assert.match(readFileSync(state, "utf8"), new RegExp(`COMMIT='${next}'`))
 })
 
-test("claude-rc-ctl/AC-16: 削除すると本体とサービス定義が消え、登録情報は残る", () => {
+test("claude-rc-ctl/AC-16: 削除すると本体とサービス定義と版の複製が消え、登録情報は残る", () => {
   const { e, ctl, dir } = setup()
   e.register("keep", "/work/keep")
+  const versions = join(e.home, ".local/share/claude-rc/versions")
+  mkdirSync(join(versions, "9.9.9"), { recursive: true })
   const r = e.run(ctl, ["self", "uninstall"])
   assert.equal(r.status, 0, r.err)
   assert.ok(!existsSync(dir))
@@ -35,6 +37,7 @@ test("claude-rc-ctl/AC-16: 削除すると本体とサービス定義が消え�
   )
   assert.ok(existsSync(join(e.confDir, "keep.env")))
   assert.ok(e.calls().includes("systemctl --user stop claude-rc@keep.service"))
+  assert.ok(!existsSync(versions))
 })
 
 test("claude-rc-ctl/AC-17: パージ付きで削除すると登録情報と設定も消える", () => {

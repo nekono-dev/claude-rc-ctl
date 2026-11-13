@@ -29,6 +29,8 @@ app_uninstall() {
   done
   systemctl --user disable --now claude-rc-archive.timer 2>/dev/null || true
   rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-archive.service" "$UNIT_DIR/claude-rc-archive.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
+  # 起動ラッパーが固定した claude の版の複製（サーバーを止めたあとなので使われていない）
+  rm -rf "$HOME/.local/share/claude-rc/versions"
   systemctl --user daemon-reload 2>/dev/null || true
 }
 

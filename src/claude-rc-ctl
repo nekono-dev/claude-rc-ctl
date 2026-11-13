@@ -5,6 +5,8 @@ set -euo pipefail
 CONF_DIR="$HOME/.config/claude-rc"
 # 判定の記録（警告済みの起動失敗の件数）を置く場所
 STATE_DIR="$HOME/.local/state/claude-rc"
+# 起動ラッパーが claude の実行ファイルを版ごとに固定する置き場所
+VER_DIR="$HOME/.local/share/claude-rc/versions"
 unit() { echo "claude-rc@$1.service"; }
 
 usage() {
@@ -34,7 +36,9 @@ usage() {
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
   CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
   CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 10080、0 でアーカイブしない）
-  CLAUDE_RC_STALE_MINUTES    claude 本体の更新後、再起動までに待つアイドル時間・分（既定: 10080、0 で再起動しない）
+  CLAUDE_RC_STALE_MINUTES    claude 本体の更新後、新しい版で再起動するまでに待つアイドル時間・分（既定: 10080、0 で再起動しない）
+
+固定した claude の版: $VER_DIR/<版>/
 USAGE
 }
 
@@ -151,9 +155,9 @@ PY
 
 # archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
 # 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
-# claude 本体の更新でサーバーが削除済みの実行ファイルのまま動いているときは、猶予時間（既定はアーカイブと同じ1週間）で再起動する
-# （古い版のサーバーが、新しい版のセッションを起動し続けるのを避けるため。再起動するとセッションがアーカイブされるので、
-# 猶予時間を短くすると、本体の更新のたびにセッションが早くアーカイブされる）
+# claude 本体が更新され、サーバーの固定した版が古くなったときは、猶予時間（既定はアーカイブと同じ1週間）で再起動して新しい版へ切り替える
+# （再起動するとセッションがアーカイブされるので、猶予時間を短くすると、本体の更新のたびにセッションが早くアーカイブされる）
+# 固定した実行ファイルが削除されたときは、新しいセッションを起動できないため、実行中のセッションがなければすぐに再起動する
 archive_one() {
   local n="$1" dry="$2" idle stale pid rc=0
   # shellcheck source=/dev/null
@@ -167,21 +171,43 @@ archive_one() {
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
   report_failures "$n" "$pid" "$dry"
   report_auth_failures "$n" "$pid" "$dry"
-  [ "$idle" -gt 0 ] || [ "$stale" -gt 0 ] || return 0
-  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" <<'PY' || rc=$?
+  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" "$VER_DIR" <<'PY' || rc=$?
 import json, os, re, sys, time
 
 name, server, idle_min, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
-stale_min = int(sys.argv[5])
+stale_min, root = int(sys.argv[5]), sys.argv[6].rstrip("/")
 
-# claude 本体が更新されると、起動済みのサーバーは削除済みの実行ファイルで動き続ける（新しいセッションは新しい版で起動する）
+
+def same_file(a, b):
+    # ハードリンクなら inode が一致する。複製（cp -p）のときは大きさと更新時刻で比べる
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) or (a.st_size, a.st_mtime_ns) == (b.st_size, b.st_mtime_ns)
+
+
+# サーバーの実行ファイル。固定した版（root/<版>/…）か、版を固定する前のサーバー（置き場所の外）かで判定を分ける
+try:
+    exe = os.readlink(f"/proc/{server}/exe")
+except OSError:
+    exe = ""
+deleted = exe.endswith(" (deleted)")
+path = exe[: -len(" (deleted)")] if deleted else exe
+pinned = path.startswith(root + "/")
+# 固定した実行ファイルが削除されると、新しいセッションを起動できない（アプリにはオンラインと表示されたままになる）
+missing = pinned and deleted
 stale = False
-if stale_min > 0:
-    try:
-        stale = os.readlink(f"/proc/{server}/exe").endswith(" (deleted)")
-    except OSError:
-        pass
-if idle_min == 0 and not stale:
+if stale_min > 0 and not missing:
+    if pinned:
+        # 固定した版の元の場所（command -v claude）を開き直し、別のファイルになっていれば本体が更新された
+        try:
+            ver = path[len(root) + 1:].split("/", 1)[0]
+            src = open(os.path.join(root, ver, "source")).read().strip()
+            stale = bool(src) and not same_file(os.stat(f"/proc/{server}/exe"), os.stat(src))
+        except OSError:
+            # 元の場所が開けない（更新の途中）ときは判定しない
+            pass
+    else:
+        # 版を固定する前のサーバーは、削除済みの実行ファイルで動いていれば本体が更新された
+        stale = deleted
+if idle_min == 0 and not stale and not missing:
     sys.exit(0)
 now = time.time()
 clk = os.sysconf("SC_CLK_TCK")
@@ -249,9 +275,11 @@ def has_reminder(cwd):
         return True
 
 
+if missing:
+    print(f"[{name}] 警告: サーバーの実行ファイルが削除されている。新しいセッションを起動できない（{path}）", file=sys.stderr)
 sessions = sorted(kids.get(server, []))
 if not sessions:
-    sys.exit(11 if stale else 0)
+    sys.exit(12 if missing else 11 if stale else 0)
 server_cwd = cwd_of(server)
 verdicts = set()
 for pid in sessions:
@@ -259,6 +287,8 @@ for pid in sessions:
     idle = int((now - last) // 60)
     if any(procs[q][0] == "R" for q in tree(pid)):
         verdict = "保持(実行中)"
+    elif missing:
+        verdict = "実行ファイル消失"
     elif has_reminder(cwd_of(pid)) or has_reminder(server_cwd):
         verdict = "保持(リマインダー)"
     elif idle_min > 0 and idle >= idle_min:
@@ -269,6 +299,11 @@ for pid in sessions:
         verdict = "保持(アイドル不足)"
     verdicts.add(verdict)
     print(f"[{name}] セッション={sid} アイドル={idle}分 判定={verdict}")
+if missing:
+    if verdicts == {"実行ファイル消失"}:
+        sys.exit(12)
+    print(f"[{name}] 警告: 実行中のセッションがあるため再起動を見送る", file=sys.stderr)
+    sys.exit(0)
 if verdicts == {"アーカイブ"}:
     sys.exit(10)
 if stale and verdicts <= {"アーカイブ", "本体更新"}:
@@ -295,7 +330,56 @@ PY
     fi
     return 0
   fi
+  if [ "$rc" -eq 12 ]; then
+    if [ "$dry" = 1 ]; then
+      echo "[$n] 対象: 実行ファイルが削除されたためサーバーを再起動する"
+    else
+      echo "[$n] 実行ファイル消失: サーバーを再起動する"
+      systemctl --user restart "$(unit "$n")"
+    fi
+    return 0
+  fi
   return "$rc"
+}
+
+# cleanup_versions <dry(0|1)>: どのプロセスも使っていない、固定した版の複製を削除する
+# 本体が更新されるたびに版の複製が残る（元が入れ替わると、ハードリンクの複製は旧版の内容を保ち、容量を使う）
+# 起動ラッパーは起動のたびに版のディレクトリの更新時刻を新しくするので、10分以内のもの（起動の途中）は残す
+cleanup_versions() {
+  [ -d "$VER_DIR" ] || return 0
+  python3 - "$VER_DIR" "$1" <<'PY'
+import os, shutil, sys, time
+
+root, dry = sys.argv[1].rstrip("/"), sys.argv[2] == "1"
+used = set()
+for d in os.listdir("/proc"):
+    if not d.isdigit():
+        continue
+    try:
+        exe = os.readlink(f"/proc/{d}/exe")
+    except OSError:
+        continue
+    if exe.endswith(" (deleted)"):
+        exe = exe[: -len(" (deleted)")]
+    if exe.startswith(root + "/"):
+        used.add(exe[len(root) + 1:].split("/", 1)[0])
+now = time.time()
+for v in sorted(os.listdir(root)):
+    p = os.path.join(root, v)
+    try:
+        if v in used or now - os.lstat(p).st_mtime < 600:
+            continue
+        if dry:
+            print(f"[版] 対象: 使われていない版 {v} を削除する")
+            continue
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+        print(f"[版] 削除: {v}")
+    except OSError as e:
+        print(f"[版] 警告: 版 {v} を削除できません: {e}", file=sys.stderr)
+PY
 }
 
 cmd="${1:-}"; shift || true
@@ -357,6 +441,7 @@ case "$cmd" in
       for f in "$CONF_DIR"/*.env; do
         archive_one "$(basename "$f" .env)" "$dry" || rc=1
       done
+      cleanup_versions "$dry" || rc=1
       exit "$rc"
     fi
     need_name "$@"

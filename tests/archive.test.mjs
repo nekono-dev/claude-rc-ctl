@@ -4,6 +4,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import test from "node:test"
 import { CTL, ROOT, installFixture, makeEnv } from "./helpers.mjs"
 
@@ -30,22 +31,19 @@ const alive = (pid) => {
 /**
  * 擬似サーバー（sh）と、指定ディレクトリを cwd とする子プロセス（セッション）を起動する。セッションが0件のサーバーは子を持たない。
  * busy が真の子は、実行中状態の孫プロセスを持つ。
- * stale が真のサーバーは、起動後に実行ファイルを削除する（claude 本体の更新で入れ替わった状態）。
+ * stale が真のサーバーは、起動後に実行ファイルを削除する（版を固定する前の方式で、claude 本体の更新で入れ替わった状態）。
+ * exe を指定したサーバーは、そのパスに置いた sh の複製で動く（版を固定した状態）。remove が真なら起動後にそれを削除する。
+ * onStarted は、サーバーの起動後、実行ファイルを削除する前に呼ぶ。
  */
-async function makeServer(e, sessions, { stale } = {}) {
+async function makeServer(e, sessions, { stale, exe, remove, onStarted } = {}) {
   // 削除してよい sh の複製をサーバー本体にする（擬似コマンドではなく実物を複製する）
   let shell = "sh"
   // セッションなしで本体を保つための待ち受け口（sleep へ置き換わると実行ファイルが変わってしまう）
   const fifo = join(e.home, `fifo-${Date.now()}`)
-  if (stale) {
-    shell = join(e.home, `sh-copy-${Date.now()}`)
-    copyFileSync(
-      realpathSync(
-        e.run("sh", ["-c", "PATH=/usr/bin:/bin command -v sh"]).out.trim(),
-      ),
-      shell,
-    )
-    chmodSync(shell, 0o755)
+  const own = stale || exe
+  if (own) {
+    shell = exe ?? join(e.home, `sh-copy-${Date.now()}`)
+    copySh(e, shell)
     e.run("mkfifo", [fifo])
   }
   const files = sessions.map((_, i) => join(e.home, `pid${i}-${Date.now()}`))
@@ -58,7 +56,7 @@ async function makeServer(e, sessions, { stale } = {}) {
     })
     .join("\n")
   // 読み書き両用で開くと開く時点では止まらず、読み取りで待ち続ける（子プロセスを作らない）
-  const idleScript = stale ? `exec 3<>'${fifo}'; read x <&3` : "exec sleep 300"
+  const idleScript = own ? `exec 3<>'${fifo}'; read x <&3` : "exec sleep 300"
   const script = sessions.length ? `${body}\nwait` : idleScript
   const server = spawn(shell, ["-c", script], {
     detached: true,
@@ -66,8 +64,9 @@ async function makeServer(e, sessions, { stale } = {}) {
   })
   for (let n = 0; n < 100 && !files.every((f) => existsSync(f)); n++)
     await sleep(50)
-  await sleep(stale ? 300 : 100)
-  if (stale) unlinkSync(shell)
+  await sleep(own ? 300 : 100)
+  onStarted?.()
+  if (stale || remove) unlinkSync(shell)
   const pids = files.map((f) => Number(readFileSync(f, "utf8").trim()))
   const stop = () => {
     try {
@@ -75,6 +74,46 @@ async function makeServer(e, sessions, { stale } = {}) {
     } catch {}
   }
   return { pid: server.pid, pids, stop }
+}
+
+/** 実物の sh を dest へ複製する（ディレクトリも作る） */
+function copySh(e, dest) {
+  mkdirSync(dirname(dest), { recursive: true })
+  copyFileSync(
+    realpathSync(
+      e.run("sh", ["-c", "PATH=/usr/bin:/bin command -v sh"]).out.trim(),
+    ),
+    dest,
+  )
+  chmodSync(dest, 0o755)
+}
+
+const versionsOf = (e) =>
+  join(e.home, ".local", "share", "claude-rc", "versions")
+
+/**
+ * 版を固定したサーバーの実行ファイルと、元の場所（source）を用意する。
+ * host が "same" なら元の場所は複製と同じファイル（ハードリンク）、"updated" なら別のファイル（本体が更新された状態）、
+ * "absent" なら存在しないパス（更新の途中）にする。
+ */
+function pinServer(e, host) {
+  const v = join(versionsOf(e), "1.0.0")
+  const exe = join(v, "claude")
+  const src = join(e.home, "host", "claude")
+  mkdirSync(dirname(src), { recursive: true })
+  return {
+    exe,
+    // サーバーの起動後、削除の前に呼ぶ（複製は makeServer が作る）
+    prepare() {
+      if (host === "same") linkSync(exe, src)
+      if (host === "updated") {
+        copySh(e, src)
+        const t = new Date(Date.now() - 86_400_000)
+        utimesSync(src, t, t)
+      }
+      writeFileSync(join(v, "source"), `${src}\n`)
+    },
+  }
 }
 
 /** プロジェクトディレクトリと、更新時刻を minutes 分前にした transcript を作る */
@@ -103,7 +142,7 @@ const RESTART = (n) => `systemctl --user restart claude-rc@${n}.service`
 /** 1インスタンスに対して archive を実行し、再起動されたかを返す */
 async function scenario(
   sessions,
-  { idle, grace, stale, args = ["archive", "inst"] } = {},
+  { idle, grace, stale, pin, remove, args = ["archive", "inst"] } = {},
 ) {
   const e = makeEnv()
   e.register("inst", "/x")
@@ -117,10 +156,11 @@ async function scenario(
   const dirs = sessions.map((s) =>
     makeProject(e, "s", s.minutes, { reminder: s.reminder }),
   )
+  const pinned = pin ? pinServer(e, pin) : undefined
   const srv = await makeServer(
     e,
     sessions.map((s, i) => ({ dir: dirs[i], busy: s.busy })),
-    { stale },
+    { stale, exe: pinned?.exe, remove, onStarted: pinned?.prepare },
   )
   try {
     const r = e.run(CTL, args, { STUB_PANE_PID_inst: String(srv.pid) })
@@ -543,6 +583,102 @@ test("claude-rc-archive/AC-26: 警告済みの認証失敗は次回の判定で�
     // 登録解除で記録が消える
     e.run(CTL, ["remove", "inst"])
     assert.ok(!existsSync(join(e.home, ".local/state/claude-rc/inst.authfail")))
+  } finally {
+    srv.stop()
+  }
+})
+
+test("claude-rc-archive/AC-27: 固定した実行ファイルと元の場所の claude が異なるサーバーはセッションがなければ再起動され、同じなら再起動されない", async () => {
+  const upd = await scenario([], { pin: "updated" })
+  assert.equal(upd.r.status, 0, upd.r.err)
+  assert.ok(upd.restarted)
+  assert.match(upd.r.out, /\[inst\] 本体更新: サーバーを再起動する/)
+  // 猶予時間の条件はこれまでと同じ（猶予時間内のセッションがあれば見送る）
+  const kept = await scenario([{ minutes: 5 }], { pin: "updated", grace: 30 })
+  assert.ok(!kept.restarted)
+  assert.match(kept.r.err, /\[inst\] 警告: claude 本体が更新されているが/)
+  assert.ok(
+    (await scenario([{ minutes: 31 }], { pin: "updated", grace: 30 }))
+      .restarted,
+  )
+  // 元の場所が同じファイルのまま、または開けない（更新の途中）なら再起動しない
+  const same = await scenario([], { pin: "same" })
+  assert.equal(same.r.status, 0, same.r.err)
+  assert.ok(!same.restarted)
+  assert.ok(!(await scenario([], { pin: "absent" })).restarted)
+  // 猶予時間が 0 なら、本体が更新されていても再起動しない
+  assert.ok(!(await scenario([], { pin: "updated", grace: 0 })).restarted)
+})
+
+test("claude-rc-archive/AC-28: 固定した実行ファイルが削除されたサーバーは、警告され、実行中のセッションがなければ再起動され、あれば再起動されない", async () => {
+  const none = await scenario([], { pin: "same", remove: true })
+  assert.equal(none.r.status, 0, none.r.err)
+  assert.ok(none.restarted)
+  assert.match(
+    none.r.err,
+    /\[inst\] 警告: サーバーの実行ファイルが削除されている/,
+  )
+  assert.match(none.r.out, /\[inst\] 実行ファイル消失: サーバーを再起動する/)
+  // 閾値・猶予時間を待たない（0 でも判定する）
+  const idle = await scenario([{ minutes: 1 }], {
+    pin: "same",
+    remove: true,
+    idle: 0,
+    grace: 0,
+  })
+  assert.ok(idle.restarted)
+  assert.match(idle.r.out, /判定=実行ファイル消失/)
+  const busy = await scenario([{ minutes: 1, busy: true }], {
+    pin: "same",
+    remove: true,
+  })
+  assert.ok(!busy.restarted)
+  assert.match(
+    busy.r.err,
+    /\[inst\] 警告: 実行中のセッションがあるため再起動を見送る/,
+  )
+  const dry = await scenario([], {
+    pin: "same",
+    remove: true,
+    args: ["archive", "--dry-run", "inst"],
+  })
+  assert.ok(!dry.restarted)
+  assert.match(
+    dry.r.out,
+    /\[inst\] 対象: 実行ファイルが削除されたためサーバーを再起動する/,
+  )
+})
+
+test("claude-rc-archive/AC-29: 一括判定で使われていない古い版は削除され、使われている版と作られたばかりの版は残り、確認のみでは削除されない", async () => {
+  const e = makeEnv()
+  const root = versionsOf(e)
+  const old = new Date(Date.now() - 3_600_000)
+  for (const v of ["old", "fresh", ".tmp-1"]) {
+    mkdirSync(join(root, v), { recursive: true })
+    writeFileSync(join(root, v, "claude"), "x")
+  }
+  utimesSync(join(root, "old"), old, old)
+  utimesSync(join(root, ".tmp-1"), old, old)
+  // 使われている版（古くても残す）
+  const srv = await makeServer(e, [], { exe: join(root, "used", "claude") })
+  utimesSync(join(root, "used"), old, old)
+  try {
+    const dry = e.run(CTL, ["archive", "--dry-run", "--all"])
+    assert.equal(dry.status, 0, dry.err)
+    assert.match(dry.out, /\[版\] 対象: 使われていない版 old を削除する/)
+    assert.ok(existsSync(join(root, "old")))
+    const r = e.run(CTL, ["archive", "--all"])
+    assert.equal(r.status, 0, r.err)
+    assert.match(r.out, /\[版\] 削除: old/)
+    assert.ok(!existsSync(join(root, "old")))
+    assert.ok(!existsSync(join(root, ".tmp-1")))
+    assert.ok(existsSync(join(root, "used", "claude")))
+    assert.ok(existsSync(join(root, "fresh")))
+    // 名前を指定した判定では削除しない
+    utimesSync(join(root, "fresh"), old, old)
+    e.register("inst", "/x")
+    assert.equal(e.run(CTL, ["archive", "inst"]).status, 0)
+    assert.ok(existsSync(join(root, "fresh")))
   } finally {
     srv.stop()
   }

@@ -35,8 +35,11 @@ echo JOURNAL_OUTPUT`,
   // 昇格コマンドは失敗させ、呼ばれたことを記録する
   sudo: `echo "sudo $*" >> "$HOME/calls.log"
 exit 99`,
-  claude: `{ pwd; for a in "$@"; do echo "$a"; done; } > "$HOME/claude.args"
-echo "$CLAUDE_CODE_EFFORT_LEVEL" > "$HOME/claude.effort"`,
+  // --version は STUB_CLAUDE_VERSION（既定 9.9.9）を返す。それ以外は引数と effort と、起動された実行ファイルのパスを記録する
+  claude: `if [ "\${1:-}" = --version ]; then echo "\${STUB_CLAUDE_VERSION:-9.9.9} (Claude Code)"; exit 0; fi
+{ pwd; for a in "$@"; do echo "$a"; done; } > "$HOME/claude.args"
+echo "$CLAUDE_CODE_EFFORT_LEVEL" > "$HOME/claude.effort"
+echo "$0" > "$HOME/claude.path"`,
   // 待ち時間を省き、呼び出しだけを記録する
   sleep: `echo "sleep $*" >> "$HOME/calls.log"`,
   // STUB_UID が設定されていれば id -u の結果を差し替える

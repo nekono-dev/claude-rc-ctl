@@ -107,6 +107,7 @@ sequenceDiagram
 | 起動ラッパー           | `~/.local/bin/claude-rc-run`（取得先へのリンク）           | 削除                        |
 | サービス定義           | `~/.config/systemd/user/claude-rc@.service`                | 削除                        |
 | 判定サービス・タイマー | `~/.config/systemd/user/claude-rc-archive.{service,timer}` | 削除                        |
+| 版の複製               | `~/.local/share/claude-rc/versions/<版>/`                  | 削除                        |
 | インスタンス登録情報   | `~/.config/claude-rc/<名前>.env`                           | パージ時だけ削除            |
 | インストーラ設定       | `~/.config/claude-rc-ctl/claude-rc-ctl.env`                | パージ時だけ削除（権限600） |
 | 導入メタ情報           | `~/.local/state/claude-rc-ctl-installer/state`             | パージ時だけ削除            |
@@ -166,7 +167,8 @@ cd "$CLAUDE_RC_DIR"
 effort="${CLAUDE_RC_EFFORT:-medium}"
 case "$effort" in low|medium|high|xhigh|max) ;; *) echo "不正な effort: $effort" >&2; sleep 30; exit 1 ;; esac
 export CLAUDE_CODE_EFFORT_LEVEL="$effort"       # remote-control が起こす各セッションへ継承される
-exec claude remote-control \
+claude="$(pin_claude)"                          # 版ごとに固定した複製（固定できなければ claude をそのまま使う）
+exec "$claude" remote-control \
   --no-create-session-in-dir \
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}" \
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}" \
@@ -236,7 +238,7 @@ main.sh refs 出力
 
 ```
 main.sh uninstall [--purge]
-  app_uninstall: 登録情報ごとに systemctl --user stop → ユニット・bin のリンクを削除 → daemon-reload
+  app_uninstall: 登録情報ごとに systemctl --user stop → ユニット・bin のリンク・版の複製を削除 → daemon-reload
   --purge のとき:
     app_purge: default.target.wants 内の claude-rc@*.service を削除 → daemon-reload
     ~/.config/claude-rc-ctl ~/.config/claude-rc ~/.local/state/claude-rc-ctl-installer を削除
@@ -245,6 +247,32 @@ main.sh uninstall [--purge]
 ```
 
 パージなしの削除では、登録情報を残すので、再導入後に各インスタンスを `start` で再開できる。
+
+### D-8: 実行ファイルの版の固定 (FR-6)
+
+claude 本体の更新（npm）は実行ファイルを入れ替えるため、起動済みのサーバーは削除済みの実行ファイルで動き、入れ替えの途中に作られたセッションは起動に失敗する。サーバーは自分の実行ファイルのパスから子セッションを起動するので、起動ラッパーは起動時点の実行ファイルを版ごとの置き場所へ固定し、その複製からサーバーを起動する。サーバーと配下のセッションは、本体が更新されても同じ版で動き続ける。
+
+```bash
+pin_claude
+  src  = command -v claude                       # 見つからなければ理由を出して30秒待ち、終了コード1
+  real = readlink -f "$src"
+  rel  = real が */node_modules/* なら node_modules/<以降>、それ以外は claude
+  tmp  = ~/.local/share/claude-rc/versions/.tmp-<pid>/<rel>
+  ln "$real" "$tmp" || cp -p "$real" "$tmp"      # 同じファイルシステムならハードリンク（容量を使わない）
+  ver  = "$tmp" --version の先頭の語              # 英数字と ._+- 以外なら固定しない
+  dest = versions/<ver>
+  mv -T tmp の親 "$dest" || tmp を削除           # 同じ版が既にあれば既存を使う（同時起動でも上書きしない）
+  echo "$src" > "$dest/source"; touch "$dest"    # 元の場所（本体の更新の検出用）と、使用中の印
+  echo "$dest/<rel>"
+```
+
+| 状況                     | 処理                                                                  |
+| ------------------------ | --------------------------------------------------------------------- |
+| npm での導入             | `versions/<版>/node_modules/@anthropic-ai/claude-code/bin/claude.exe` |
+| それ以外（ネイティブ版） | `versions/<版>/claude`                                                |
+| 固定に失敗               | 警告を出し、`claude` をそのまま起動する                               |
+
+claude は実行ファイルの置き場所で導入方式を判定し、自動更新の方法を変える。node_modules からの相対配置を保つと npm 版として判定され、自動更新は元の導入を更新し、複製は書き換えない。ハードリンクの複製は、元が入れ替わっても古い版の内容を保つ。使われなくなった版の削除は、定期実行の一括判定が行う。削除時は、サーバーを止めたあとに置き場所ごと消す。
 
 ## 4. エラー処理
 
@@ -255,6 +283,8 @@ main.sh uninstall [--purge]
 | 管理者での導入                               | 「一般ユーザーで実行してください」を出して終了コード1 |
 | tmux・python3・systemctl・git の欠落         | 不足コマンド名を出して終了コード1                     |
 | 起動時の effort が許可値以外                 | 理由を標準エラーへ出して30秒待ち、終了コード1         |
+| 起動時に claude が見つからない               | 理由を標準エラーへ出して30秒待ち、終了コード1         |
+| 実行ファイルの版を固定できない               | 警告を標準エラーへ出し、claude をそのまま起動する     |
 | 取得したコミットが埋め込み値と不一致         | エラー終了し、導入物を配置しない                      |
 | 指定した名前が取得元にない・曖昧             | 理由を出して終了コード1。導入先と導入情報は変えない   |
 | 取得先に未コミットの変更がある               | 更新を中止して終了コード1                             |

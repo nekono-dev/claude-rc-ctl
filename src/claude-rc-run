@@ -22,6 +22,38 @@ case "$effort" in
 esac
 export CLAUDE_CODE_EFFORT_LEVEL="$effort"
 
+# claude 本体の実行ファイルを版ごとに固定する（標準出力へ固定した複製のパスを出す）
+# サーバーは自分の実行ファイルのパスから子セッションを起動するため、固定した複製から起動すれば、
+# 本体が更新されても、サーバーと配下のセッションは同じ版で動き続ける（入れ替えの途中に実行ファイルがない状態にもならない）
+VER_DIR="$HOME/.local/share/claude-rc/versions"
+pin_claude() {
+  local src="$1" real rel tmp ver dest
+  real="$(readlink -f "$src")" || return 1
+  # claude は置き場所で導入方式を判定し、自動更新の方法を変える。npm の導入は node_modules からの相対配置を保ち、npm 版として扱わせる
+  case "$real" in
+    */node_modules/*) rel="node_modules/${real##*/node_modules/}" ;;
+    *) rel="claude" ;;
+  esac
+  tmp="$VER_DIR/.tmp-$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp/$(dirname "$rel")" || return 1
+  # 同じファイルシステムならハードリンク（容量を使わず、元が入れ替わっても旧版の内容を保つ）
+  ln "$real" "$tmp/$rel" 2>/dev/null || cp -p "$real" "$tmp/$rel" || { rm -rf "$tmp"; return 1; }
+  ver="$("$tmp/$rel" --version 2>/dev/null | awk 'NR==1{print $1}')"
+  [[ "$ver" =~ ^[0-9A-Za-z._+-]+$ ]] || { rm -rf "$tmp"; return 1; }
+  dest="$VER_DIR/$ver"
+  # 同じ版が既にあれば既存を使う（-T は既存のディレクトリの中へ移さず失敗させる。同時起動でも上書きしない）
+  mv -T "$tmp" "$dest" 2>/dev/null || rm -rf "$tmp"
+  [ -x "$dest/$rel" ] || return 1
+  # 元の場所（本体の更新の検出用）と、使用中の印（作られたばかりの版を削除させない）
+  echo "$src" > "$dest/source" || return 1
+  touch "$dest"
+  echo "$dest/$rel"
+}
+
+src="$(command -v claude)" || { echo "claude が見つかりません（nvm で導入してください）" >&2; sleep 30; exit 1; }
+claude="$(pin_claude "$src")" || { echo "警告: claude の実行ファイルを版ごとに固定できないため、そのまま起動します: $src" >&2; claude="$src"; }
+
 # セッションを事前に作らない（作ると再開用の記録が残り、停止してもアーカイブされない）
 args=(remote-control
   --no-create-session-in-dir
@@ -30,4 +62,4 @@ args=(remote-control
   --remote-control-session-name-prefix "$(hostname)-$name")
 
 # --continue は --spawn と併用できないため、再起動時は常に新規に立ち上げる
-exec claude "${args[@]}"
+exec "$claude" "${args[@]}"
