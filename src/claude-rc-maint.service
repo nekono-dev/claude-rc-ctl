@@ -1,0 +1,8 @@
+# 常駐サーバーの保守を一括で行う（claude-rc-maint.timer から起動される）
+# 本体の更新・実行ファイルの消失への追従、使われなくなった版の削除、起動失敗と認証失敗の警告
+[Unit]
+Description=Claude Remote Control maintenance
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-rc-ctl maintain --all

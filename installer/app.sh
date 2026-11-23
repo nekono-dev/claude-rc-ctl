@@ -11,13 +11,16 @@ app_install() {
   chmod 755 "$DIR/src/claude-rc-ctl" "$DIR/src/claude-rc-run"
   ln -sf "$DIR/src/claude-rc-ctl" "$BIN_DIR/claude-rc-ctl"
   ln -sf "$DIR/src/claude-rc-run" "$BIN_DIR/claude-rc-run"
-  if [ -f "$UNIT_DIR/claude-rc-reap.timer" ]; then
-    systemctl --user disable --now claude-rc-reap.timer 2>/dev/null || true
-  fi
-  rm -f "$UNIT_DIR/claude-rc-reap.service" "$UNIT_DIR/claude-rc-reap.timer" "$UNIT_DIR/timers.target.wants/claude-rc-reap.timer"
-  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-archive.service" "$DIR/src/claude-rc-archive.timer" "$UNIT_DIR/"
+  # 旧名の定期実行（claude-rc-reap・claude-rc-archive）を撤去する
+  for _o in claude-rc-reap claude-rc-archive; do
+    if [ -f "$UNIT_DIR/$_o.timer" ]; then
+      systemctl --user disable --now "$_o.timer" 2>/dev/null || true
+    fi
+    rm -f "$UNIT_DIR/$_o.service" "$UNIT_DIR/$_o.timer" "$UNIT_DIR/timers.target.wants/$_o.timer"
+  done
+  cp "$DIR/src/claude-rc@.service" "$DIR/src/claude-rc-maint.service" "$DIR/src/claude-rc-maint.timer" "$UNIT_DIR/"
   systemctl --user daemon-reload
-  systemctl --user enable --now claude-rc-archive.timer
+  systemctl --user enable --now claude-rc-maint.timer
   [ -s "$HOME/.nvm/nvm.sh" ] || log "警告: $HOME/.nvm/nvm.sh がありません。claude-rc-run は nvm 経由で claude を起動します"
   [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = "yes" ] || log "警告: linger が無効です。ログアウトやOS再起動後も常駐させるには loginctl enable-linger $(id -un) を実行してください"
 }
@@ -27,8 +30,8 @@ app_uninstall() {
     [ -f "$_f" ] || continue
     systemctl --user stop "claude-rc@$(basename "$_f" .env).service" 2>/dev/null || true
   done
-  systemctl --user disable --now claude-rc-archive.timer 2>/dev/null || true
-  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-archive.service" "$UNIT_DIR/claude-rc-archive.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
+  systemctl --user disable --now claude-rc-maint.timer 2>/dev/null || true
+  rm -f "$UNIT_DIR/claude-rc@.service" "$UNIT_DIR/claude-rc-maint.service" "$UNIT_DIR/claude-rc-maint.timer" "$BIN_DIR/claude-rc-ctl" "$BIN_DIR/claude-rc-run"
   # 起動ラッパーが固定した claude の版の複製（サーバーを止めたあとなので使われていない）
   rm -rf "$HOME/.local/share/claude-rc/versions"
   systemctl --user daemon-reload 2>/dev/null || true
@@ -36,6 +39,6 @@ app_uninstall() {
 
 app_purge() {
   rm -rf "$HOME/.local/state/claude-rc"
-  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-archive.timer"
+  rm -f "$UNIT_DIR"/default.target.wants/claude-rc@*.service "$UNIT_DIR/timers.target.wants/claude-rc-maint.timer"
   systemctl --user daemon-reload 2>/dev/null || true
 }

@@ -100,17 +100,17 @@ sequenceDiagram
 
 すべての導入物をユーザーのホーム配下に置き、管理者権限を使わない。コマンドとラッパーは取得先のファイルへのシンボリックリンクとし、更新は取得先の入れ替えだけで反映する。サービス定義だけはコピーして配置する。
 
-| 種別                   | パス                                                       | 削除時の扱い                |
-| ---------------------- | ---------------------------------------------------------- | --------------------------- |
-| 取得先（git）          | `$CLAUDE_RC_CTL_DIR`、既定 `~/.local/share/claude-rc-ctl`  | 削除                        |
-| コマンド               | `~/.local/bin/claude-rc-ctl`（取得先へのリンク）           | 削除                        |
-| 起動ラッパー           | `~/.local/bin/claude-rc-run`（取得先へのリンク）           | 削除                        |
-| サービス定義           | `~/.config/systemd/user/claude-rc@.service`                | 削除                        |
-| 判定サービス・タイマー | `~/.config/systemd/user/claude-rc-archive.{service,timer}` | 削除                        |
-| 版の複製               | `~/.local/share/claude-rc/versions/<版>/`                  | 削除                        |
-| インスタンス登録情報   | `~/.config/claude-rc/<名前>.env`                           | パージ時だけ削除            |
-| インストーラ設定       | `~/.config/claude-rc-ctl/claude-rc-ctl.env`                | パージ時だけ削除（権限600） |
-| 導入メタ情報           | `~/.local/state/claude-rc-ctl-installer/state`             | パージ時だけ削除            |
+| 種別                   | パス                                                      | 削除時の扱い                |
+| ---------------------- | --------------------------------------------------------- | --------------------------- |
+| 取得先（git）          | `$CLAUDE_RC_CTL_DIR`、既定 `~/.local/share/claude-rc-ctl` | 削除                        |
+| コマンド               | `~/.local/bin/claude-rc-ctl`（取得先へのリンク）          | 削除                        |
+| 起動ラッパー           | `~/.local/bin/claude-rc-run`（取得先へのリンク）          | 削除                        |
+| サービス定義           | `~/.config/systemd/user/claude-rc@.service`               | 削除                        |
+| 判定サービス・タイマー | `~/.config/systemd/user/claude-rc-maint.{service,timer}`  | 削除                        |
+| 版の複製               | `~/.local/share/claude-rc/versions/<版>/`                 | 削除                        |
+| インスタンス登録情報   | `~/.config/claude-rc/<名前>.env`                          | パージ時だけ削除            |
+| インストーラ設定       | `~/.config/claude-rc-ctl/claude-rc-ctl.env`               | パージ時だけ削除（権限600） |
+| 導入メタ情報           | `~/.local/state/claude-rc-ctl-installer/state`            | パージ時だけ削除            |
 
 ### D-2: 登録と解除 (FR-1, FR-2, FR-7, FR-8)
 
@@ -134,6 +134,8 @@ rm -f "$CONF_DIR/$name.env"
 ```
 
 `--spawn` は位置引数の前に置き、指定がなければ登録情報へ `CLAUDE_RC_SPAWN` を書かず、起動ラッパーの既定値（same-dir）に任せる。
+
+登録解除はサーバーを止めるだけで、配下のセッションはアーカイブされずアプリの一覧に残る（停止時の remote-control は環境を保持する）。不要なセッションはアプリからアーカイブする。
 
 信頼判定は `~/.claude.json` の `projects.<dir>.hasTrustDialogAccepted` が真であるかどうかで行い、読めない場合は未信頼として扱う。検証の失敗は登録情報を作る前に終了コード1で終える。
 
@@ -169,7 +171,6 @@ case "$effort" in low|medium|high|xhigh|max) ;; *) echo "不正な effort: $effo
 export CLAUDE_CODE_EFFORT_LEVEL="$effort"       # remote-control が起こす各セッションへ継承される
 claude="$(pin_claude)"                          # 版ごとに固定した複製（固定できなければ claude をそのまま使う）
 exec "$claude" remote-control \
-  --no-create-session-in-dir \
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}" \
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}" \
   --remote-control-session-name-prefix "$(hostname)-<name>"
@@ -273,6 +274,37 @@ pin_claude
 | 固定に失敗               | 警告を出し、`claude` をそのまま起動する                               |
 
 claude は実行ファイルの置き場所で導入方式を判定し、自動更新の方法を変える。node_modules からの相対配置を保つと npm 版として判定され、自動更新は元の導入を更新し、複製は書き換えない。ハードリンクの複製は、元が入れ替わっても古い版の内容を保つ。使われなくなった版の削除は、定期実行の一括判定が行う。削除時は、サーバーを止めたあとに置き場所ごと消す。
+
+### D-9: 前回の環境の再利用 (FR-6)
+
+remote-control は、起動時のセッションを作る設定（既定）のときだけ、作業ディレクトリごとの記録（ポインタ）に環境 ID を書き、次の起動でそれを読んで同じ環境 ID で登録し直す。セッションは環境に結び付いているため、環境が同じならサーバーの再起動・異常終了・OS の再起動の後も、アプリのセッションをそのまま続けられる。起動ラッパーは起動時のセッションを作らない指定を付けない。
+
+```json
+// ~/.claude/projects/<作業ディレクトリの記号を - にした名前>/bridge-pointer.json
+{
+  "sessionId": "session_…",
+  "environmentId": "env_…",
+  "source": "standalone",
+  "pid": 1234,
+  "procStart": "…",
+  "dir": "<作業ディレクトリ>",
+  "machineId": "…",
+  "accountUuid": "…",
+  "organizationUuid": "…"
+}
+```
+
+| 状況                                                   | remote-control の動作                                                              |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| 起動時（ポインタあり、30日以内、同じ機械・アカウント） | 同じ環境 ID の再利用を求めて登録し、`sessionId` のセッションを再接続する           |
+| 起動時（ポインタなし）                                 | 新しい環境を登録し、起動時のセッションを作ってポインタを書く                       |
+| 停止シグナル（SIGHUP・SIGTERM）                        | 子セッションを止め、アーカイブと登録解除をせず環境を保持する                       |
+| 異常終了                                               | 何もしない（環境はサーバー側に残る）                                               |
+| 再起動後、ほかのセッションにメッセージ                 | 前の作業の貸し出しが切れたあと（数分）、同じ環境のサーバーで子セッションを起動する |
+
+ポインタを書いたプロセスがまだ動いていれば（pid と起動時刻で判定）、再利用せずに新しい環境を登録する。起動時のセッションは、ポインタの `sessionId` として再起動のたびに使い回されるので、アプリの一覧に増え続けない。
+
+ポインタを消して起動すると、同じディレクトリの旧環境がサーバー側に残っている間は登録を拒否される（終了コード 69）。claude-rc-ctl はポインタを作らず、消さない。
 
 ## 4. エラー処理
 

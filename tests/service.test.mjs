@@ -44,7 +44,6 @@ test("claude-rc-ctl/AC-8: 登録情報に値がないとき same-dir と auto �
   assert.equal(args[0], dir)
   assert.deepEqual(args.slice(1), [
     "remote-control",
-    "--no-create-session-in-dir",
     "--spawn",
     "same-dir",
     "--permission-mode",
@@ -58,7 +57,7 @@ test("claude-rc-ctl/AC-9: 登録情報の起動方式と権限モードで remot
   const { args } = runWith(
     "CLAUDE_RC_SPAWN=same-dir\nCLAUDE_RC_PERMISSION_MODE=plan\n",
   )
-  assert.deepEqual(args.slice(3, 7), [
+  assert.deepEqual(args.slice(2, 6), [
     "--spawn",
     "same-dir",
     "--permission-mode",
@@ -97,10 +96,11 @@ test("claude-rc-ctl/AC-19: サービス定義は常に再起動し、待ち時�
   assert.match(unit, /^RestartSec=10$/m)
 })
 
-test("claude-rc-archive/AC-14: 起動ラッパーはセッションを事前に作らない指定を付けて remote-control を起動する", () => {
-  const { args } = runWith("")
+test("claude-rc-ctl/AC-35: 起動ラッパーは起動時のセッションを作らない指定を付けずに remote-control を起動する", () => {
+  const { args } = runWith("CLAUDE_RC_SPAWN=worktree\n")
   assert.equal(args[1], "remote-control")
-  assert.ok(args.includes("--no-create-session-in-dir"))
+  // 付けると remote-control が環境 ID を記録せず、再起動のたびに新しい環境になってセッションが孤立する
+  assert.ok(!args.some((a) => a.includes("create-session-in-dir")))
 })
 
 const VERSIONS = (e) => join(e.home, ".local", "share", "claude-rc", "versions")
