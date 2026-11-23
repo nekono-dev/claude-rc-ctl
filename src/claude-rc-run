@@ -54,12 +54,13 @@ pin_claude() {
 src="$(command -v claude)" || { echo "claude が見つかりません（nvm で導入してください）" >&2; sleep 30; exit 1; }
 claude="$(pin_claude "$src")" || { echo "警告: claude の実行ファイルを版ごとに固定できないため、そのまま起動します: $src" >&2; claude="$src"; }
 
-# セッションを事前に作らない（作ると再開用の記録が残り、停止してもアーカイブされない）
+# 起動時のセッションを作る設定（既定）のまま起動する。remote-control はこのときだけ環境 ID を記録し、
+# 次の起動で同じ環境を再利用するので、再起動・異常終了・OS の再起動の後もアプリのセッションを続けられる
+# （--no-create-session-in-dir を付けると記録が作られず、起動のたびに新しい環境になってセッションが孤立する）
 args=(remote-control
-  --no-create-session-in-dir
   --spawn "${CLAUDE_RC_SPAWN:-same-dir}"
   --permission-mode "${CLAUDE_RC_PERMISSION_MODE:-auto}"
   --remote-control-session-name-prefix "$(hostname)-$name")
 
-# --continue は --spawn と併用できないため、再起動時は常に新規に立ち上げる
+# --continue・--session-id は --spawn と併用できないため使わない（再接続は上記の環境の再利用で行われる）
 exec "$claude" "${args[@]}"

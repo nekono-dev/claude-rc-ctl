@@ -1,7 +1,7 @@
 # 開発ガイド
 
 - 言語は日本語（コメント・ドキュメント・エラーメッセージ）。README は利用者向けで、「だ・である」調。
-- 仕様駆動開発: 機能の追加・修正の前に `specs/<コンポーネント>/`（claude-rc-ctl・claude-rc-archive）の要件・設計・タスクを更新し、`npm run lint:spec` を通す（実体は `spec-lint`）。ルールは `spec-lint --rules`。
+- 仕様駆動開発: 機能の追加・修正の前に `specs/<コンポーネント>/`（claude-rc-ctl・claude-rc-maint）の要件・設計・タスクを更新し、`npm run lint:spec` を通す（実体は `spec-lint`）。ルールは `spec-lint --rules`。
 - `spec-lint`（`@nekono-dev/spec-lint`）と skill は環境側に導入し、このリポジトリには同梱しない。導入は `npm install -g @nekono-dev/spec-lint`（GitHub Packages の認証が必要）、skill は `~/.claude/skills/spec-driven-development`。手順は skill の `references/setup.md`。未導入だと lint は導入手順を表示して終了コード 1 で止まる。
 - 設計済みの spec が3件以上になったら `docs/architecture.md` を必須とする（現在は2件で任意）。手順は skill の `references/workflow.md`。
 - 受け入れ条件 `AC-n` には、テスト名に `claude-rc-ctl/AC-n` を含むテストを `tests/*.test.mjs` に置く（lint が検査する）。

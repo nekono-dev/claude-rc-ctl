@@ -1,0 +1,10 @@
+# 保守の判定を10分ごとに実行する
+[Unit]
+Description=Claude Remote Control maintenance timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

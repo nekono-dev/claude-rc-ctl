@@ -19,9 +19,9 @@ usage() {
   remove <name>      停止して登録解除
   list               登録済みの一覧と状態
   start|stop|restart|status <name>
-  archive [--dry-run] <name|--all>
-                     全セッションがアイドルでリマインダーもなければ、サーバーを再起動して
-                     セッションをアーカイブ（--dry-run は判定の表示のみ）
+  maintain [--dry-run] <name|--all>
+                     claude 本体が更新された・実行ファイルが消えたサーバーを再起動し、起動失敗と
+                     認証失敗を警告する（--all は使われない版の削除も行う。--dry-run は判定の表示のみ）
   attach <name>      tmux 画面に接続（抜けるときは Ctrl-b d）
   logs <name>        画面の直近出力とジャーナルを表示
   self update [--ref NAME] [--set KEY=VALUE ...]
@@ -35,8 +35,6 @@ usage() {
   CLAUDE_RC_SPAWN            spawn モード（既定: same-dir）
   CLAUDE_RC_PERMISSION_MODE  権限モード（既定: auto）
   CLAUDE_RC_EFFORT           effort（low|medium|high|xhigh|max、既定: medium）
-  CLAUDE_RC_ARCHIVE_MINUTES  アーカイブまでのアイドル時間・分（既定: 10080、0 でアーカイブしない）
-  CLAUDE_RC_STALE_MINUTES    claude 本体の更新後、新しい版で再起動するまでに待つアイドル時間・分（既定: 10080、0 で再起動しない）
 
 固定した claude の版: $VER_DIR/<版>/
 USAGE
@@ -153,29 +151,21 @@ PY
   }
 }
 
-# archive_one <name> <dry(0|1)>: 配下の全セッションがアイドルでリマインダーもなければ、サーバーを再起動する
-# 再起動で remote-control が環境を登録解除し、動作中のセッションがアプリ上でアーカイブされる
-# claude 本体が更新され、サーバーの固定した版が古くなったときは、猶予時間（既定はアーカイブと同じ1週間）で再起動して新しい版へ切り替える
-# （再起動するとセッションがアーカイブされるので、猶予時間を短くすると、本体の更新のたびにセッションが早くアーカイブされる）
-# 固定した実行ファイルが削除されたときは、新しいセッションを起動できないため、実行中のセッションがなければすぐに再起動する
-archive_one() {
-  local n="$1" dry="$2" idle stale pid rc=0
-  # shellcheck source=/dev/null
-  idle="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_ARCHIVE_MINUTES:-10080}")"
-  [[ "$idle" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_ARCHIVE_MINUTES は整数で指定してください: $idle" >&2; return 1; }
-  # shellcheck source=/dev/null
-  stale="$(. "$CONF_DIR/$n.env"; echo "${CLAUDE_RC_STALE_MINUTES:-10080}")"
-  [[ "$stale" =~ ^[0-9]+$ ]] || { echo "[$n] CLAUDE_RC_STALE_MINUTES は整数で指定してください: $stale" >&2; return 1; }
+# maintain_one <name> <dry(0|1)>: 起動失敗と認証失敗を警告し、claude 本体が更新されたサーバーと、固定した実行ファイルが消えたサーバーを再起動する
+# 停止時の remote-control は環境を保持し、再起動後のサーバーが同じ環境を再利用するので、再起動しても配下のセッションは失われない
+# 実行中の子プロセスを持つセッション（作業が中断される）と、リマインダーを持つセッション（再起動後にメッセージを受けるまで起動されない）があれば見送る
+# 固定した実行ファイルが削除されたときは、新しいセッションを起動できないため、実行中のセッションがなければリマインダーがあっても再起動する
+maintain_one() {
+  local n="$1" dry="$2" pid rc=0
   [ "$(systemctl --user is-active "$(unit "$n")" || true)" = active ] || return 0
   pid="$(tmux -L "claude-rc-$n" display-message -p -t "$n" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[$n] 警告: サーバーのプロセスを特定できません" >&2; return 0; }
   report_failures "$n" "$pid" "$dry"
   report_auth_failures "$n" "$pid" "$dry"
-  python3 - "$n" "$pid" "$idle" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$stale" "$VER_DIR" <<'PY' || rc=$?
-import json, os, re, sys, time
+  python3 - "$n" "$pid" "$VER_DIR" <<'PY' || rc=$?
+import json, os, sys
 
-name, server, idle_min, cdir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
-stale_min, root = int(sys.argv[5]), sys.argv[6].rstrip("/")
+name, server, root = sys.argv[1], int(sys.argv[2]), sys.argv[3].rstrip("/")
 
 
 def same_file(a, b):
@@ -194,7 +184,7 @@ pinned = path.startswith(root + "/")
 # 固定した実行ファイルが削除されると、新しいセッションを起動できない（アプリにはオンラインと表示されたままになる）
 missing = pinned and deleted
 stale = False
-if stale_min > 0 and not missing:
+if not missing:
     if pinned:
         # 固定した版の元の場所（command -v claude）を開き直し、別のファイルになっていれば本体が更新された
         try:
@@ -207,14 +197,10 @@ if stale_min > 0 and not missing:
     else:
         # 版を固定する前のサーバーは、削除済みの実行ファイルで動いていれば本体が更新された
         stale = deleted
-if idle_min == 0 and not stale and not missing:
+if not stale and not missing:
     sys.exit(0)
-now = time.time()
-clk = os.sysconf("SC_CLK_TCK")
-btime = next(int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime"))
-UUID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
-# pid -> (状態, 親pid, 起動時刻)
+# pid -> (状態, 親pid)
 procs = {}
 for d in os.listdir("/proc"):
     if not d.isdigit():
@@ -222,11 +208,11 @@ for d in os.listdir("/proc"):
     try:
         s = open(f"/proc/{d}/stat").read()
         f = s[s.rindex(")") + 2:].split()
-        procs[int(d)] = (f[0], int(f[1]), btime + int(f[19]) / clk)
+        procs[int(d)] = (f[0], int(f[1]))
     except (OSError, ValueError):
         pass
 kids = {}
-for p, (_, pp, _) in procs.items():
+for p, (_, pp) in procs.items():
     kids.setdefault(pp, []).append(p)
 
 
@@ -246,20 +232,16 @@ def cwd_of(pid):
         return None
 
 
-def last_active(pid):
-    last, sid = procs[pid][2], "-"
+def session_id(pid):
+    # 子セッションは --session-id <cse_…> で起動される
     try:
         argv = open(f"/proc/{pid}/cmdline", "rb").read().decode(errors="replace").split("\0")
-        for a, b in zip(argv, argv[1:]):
-            if a in ("--session-id", "--resume") and UUID.fullmatch(b):
-                sid = b
-        proj = os.path.join(cdir, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd_of(pid) or ""))
-        own = os.path.join(proj, sid + ".jsonl")
-        files = [own] if os.path.isfile(own) else [os.path.join(proj, x) for x in os.listdir(proj) if x.endswith(".jsonl")]
-        last = max([os.path.getmtime(x) for x in files], default=last)
     except OSError:
-        pass
-    return last, sid
+        return "-"
+    for a, b in zip(argv, argv[1:]):
+        if a == "--session-id" and b:
+            return b
+    return "-"
 
 
 def has_reminder(cwd):
@@ -277,50 +259,27 @@ def has_reminder(cwd):
 
 if missing:
     print(f"[{name}] 警告: サーバーの実行ファイルが削除されている。新しいセッションを起動できない（{path}）", file=sys.stderr)
-sessions = sorted(kids.get(server, []))
-if not sessions:
-    sys.exit(12 if missing else 11 if stale else 0)
 server_cwd = cwd_of(server)
-verdicts = set()
-for pid in sessions:
-    last, sid = last_active(pid)
-    idle = int((now - last) // 60)
-    if any(procs[q][0] == "R" for q in tree(pid)):
+held = False
+for pid in sorted(kids.get(server, [])):
+    if any(procs.get(q, ("",))[0] == "R" for q in tree(pid)):
         verdict = "保持(実行中)"
     elif missing:
         verdict = "実行ファイル消失"
     elif has_reminder(cwd_of(pid)) or has_reminder(server_cwd):
         verdict = "保持(リマインダー)"
-    elif idle_min > 0 and idle >= idle_min:
-        verdict = "アーカイブ"
-    elif stale and idle >= stale_min:
-        verdict = "本体更新"
     else:
-        verdict = "保持(アイドル不足)"
-    verdicts.add(verdict)
-    print(f"[{name}] セッション={sid} アイドル={idle}分 判定={verdict}")
+        verdict = "本体更新"
+    held = held or verdict.startswith("保持")
+    print(f"[{name}] セッション={session_id(pid)} 判定={verdict}")
+if not held:
+    sys.exit(12 if missing else 11)
 if missing:
-    if verdicts == {"実行ファイル消失"}:
-        sys.exit(12)
     print(f"[{name}] 警告: 実行中のセッションがあるため再起動を見送る", file=sys.stderr)
-    sys.exit(0)
-if verdicts == {"アーカイブ"}:
-    sys.exit(10)
-if stale and verdicts <= {"アーカイブ", "本体更新"}:
-    sys.exit(11)
-if stale:
+else:
     print(f"[{name}] 警告: claude 本体が更新されているが、利用中のセッションがあるため再起動を見送る", file=sys.stderr)
 sys.exit(0)
 PY
-  if [ "$rc" -eq 10 ]; then
-    if [ "$dry" = 1 ]; then
-      echo "[$n] 対象: サーバーを再起動してセッションをアーカイブする"
-    else
-      echo "[$n] アーカイブ: サーバーを再起動する"
-      systemctl --user restart "$(unit "$n")"
-    fi
-    return 0
-  fi
   if [ "$rc" -eq 11 ]; then
     if [ "$dry" = 1 ]; then
       echo "[$n] 対象: claude 本体が更新されたためサーバーを再起動する"
@@ -431,7 +390,7 @@ case "$cmd" in
     need_name "$@"
     systemctl --user "$cmd" "$(unit "$1")"
     ;;
-  archive)
+  maintain)
     dry=0
     if [ "${1:-}" = "--dry-run" ]; then dry=1; shift; fi
     [ $# -eq 1 ] || { usage; exit 1; }
@@ -439,13 +398,13 @@ case "$cmd" in
       shopt -s nullglob
       rc=0
       for f in "$CONF_DIR"/*.env; do
-        archive_one "$(basename "$f" .env)" "$dry" || rc=1
+        maintain_one "$(basename "$f" .env)" "$dry" || rc=1
       done
       cleanup_versions "$dry" || rc=1
       exit "$rc"
     fi
     need_name "$@"
-    archive_one "$1" "$dry"
+    maintain_one "$1" "$dry"
     ;;
   attach)
     need_name "$@"
